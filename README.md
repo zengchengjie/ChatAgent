@@ -1,6 +1,12 @@
 # ChatAgent（Java Agent MVP）
 
-面向面试演示的 **多轮对话 + 工具调用闭环 + SSE** 全栈示例，后端 **Spring Boot 3 / Java 17**，默认对接 **阿里云 DashScope 通义千问（OpenAI 兼容模式）**，持久化 **SQLite**，限流 **Redis**。需求与阶段划分见 [AGENT_PROJECT_SPEC.md](AGENT_PROJECT_SPEC.md)；**Agent 开发流程、数据流与扩展工具步骤**见 [AGENT_DEVELOPMENT_GUIDE.md](AGENT_DEVELOPMENT_GUIDE.md)。
+面向面试演示的 **多轮对话 + 工具调用闭环 + SSE** 全栈示例，后端 **Spring Boot 3 / Java 17**，默认对接 **阿里云 DashScope 通义千问（OpenAI 兼容模式）**，持久化 **SQLite**，限流 **Redis**。  
+当前支持双引擎：
+
+- `langchain4j`（默认，学习优先）
+- `self`（保留自研编排实现）
+
+需求与阶段划分见 [AGENT_PROJECT_SPEC.md](AGENT_PROJECT_SPEC.md)；**Agent 开发流程、数据流与扩展工具步骤**见 [AGENT_DEVELOPMENT_GUIDE.md](AGENT_DEVELOPMENT_GUIDE.md)；迁移说明见 [MIGRATION_TO_LANGCHAIN4J.md](MIGRATION_TO_LANGCHAIN4J.md)。
 
 ## 架构
 
@@ -16,17 +22,18 @@ flowchart LR
 
 ## Agent 主循环（后端）
 
-1. 将历史消息（含 `tool_calls` / `tool` 角色）组装为 OpenAI 兼容 `messages`，并附带 `tools` 定义。  
-2. 调用 DashScope `chat/completions`（非流式）直到返回 **最终文本** 或 **tool_calls**。  
-3. 若存在 `tool_calls`：校验并执行白名单工具 → 写入 `tool` 消息 → 回到步骤 2。  
-4. 超过 `AGENT_MAX_STEPS` 则返回友好错误。  
-5. **SSE 接口**：工具轮仍用非流式调用；最终助手文本在服务端按块切分后作为 `delta` 事件推送（避免同轮二次调用模型）。`DashScopeClient.streamCompletion` 已实现真实 SSE 解析，可用于测试或后续改为「最后一轮直连流式」。
+1. `AgentController` 将请求交给 `AgentEngineRouter`。  
+2. Router 根据 `APP_AGENT_ENGINE` 选择 `langchain4j` 或 `self` 引擎。  
+3. 引擎执行对话与工具调用，统一输出 SSE/JSON。  
+4. 关键护栏（最大工具调用、超时）与日志（`traceId`、`event=agent_summary`）保持可观测。
 
 ## 目录
 
 | 路径 | 说明 |
 |------|------|
 | [AGENT_DEVELOPMENT_GUIDE.md](AGENT_DEVELOPMENT_GUIDE.md) | Agent 流程、数据流、OpenAI 消息格式、加工具、调试 |
+| [MIGRATION_TO_LANGCHAIN4J.md](MIGRATION_TO_LANGCHAIN4J.md) | 迁移映射、配置变化、回滚方案 |
+| [LEARNING_PATH_LANGCHAIN4J.md](LEARNING_PATH_LANGCHAIN4J.md) | 2小时/1天/3天学习路径 |
 | [backend/](backend/) | Spring Boot API、Flyway、Agent、限流 |
 | [frontend/](frontend/) | Vue 3 + Vite + Pinia，开发时代理 `/api` |
 | [docker-compose.yml](docker-compose.yml) | 仅 Redis |
@@ -43,6 +50,7 @@ flowchart LR
 cd backend
 export DASHSCOPE_API_KEY=sk-xxxx
 export JWT_SECRET=dev-secret-change-in-production-min-256-bits-please-use-long-random-string
+export APP_AGENT_ENGINE=langchain4j
 mvn spring-boot:run
 ```
 
@@ -73,13 +81,33 @@ npm run dev
 - `GET /api/health`  
 - `POST /api/sessions`、`GET /api/sessions`、`GET /api/sessions/{id}/messages`  
 - `POST /api/agent/chat` — JSON 回复，含 `steps`（工具摘要）  
-- `POST /api/agent/chat/stream` — `text/event-stream`，事件：`delta`、`tool_start`、`tool_end`、`error`、`done`  
+- `POST /api/agent/chat/stream` — `text/event-stream`，事件：`plan_start`、`plan_step`、`plan_done`、`tool_start`、`tool_end`、`guardrail`、`delta`、`error`、`done`  
 
 Agent 相关接口受 **Redis 滑动窗口限流**（按用户、每分钟），超限 **HTTP 429**。
 
 ## 换模型
 
 设置环境变量 **`DASHSCOPE_MODEL`**（如 `qwen-plus`、`qwen-turbo` 等），并查阅当前模型在 **compatible-mode** 下对 **tools** 的支持情况。
+
+## 最小验证命令
+
+```bash
+# 1) 编译/测试
+cd backend
+mvn -DskipTests compile
+mvn test
+
+# 2) 三个验证脚本（需先拿 TOKEN 与 SESSION_ID）
+TOKEN=... SESSION_ID=... ./scripts/verify_planning_stream.sh
+TOKEN=... SESSION_ID=... ./scripts/verify_rag_nohit.sh
+TOKEN=... SESSION_ID=... ./scripts/verify_guardrail.sh
+```
+
+脚本结果说明：
+
+- `verify_planning_stream.sh`：需要看到 plan 事件 + 至少 2 次工具调用
+- `verify_rag_nohit.sh`：需要看到 `search_knowledge` 返回 `hit=false` 且 `chunks=[]`
+- `verify_guardrail.sh`：需要看到 `guardrail` 事件且流式能结束（不无限循环）
 
 ## 面试可讲点
 
