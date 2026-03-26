@@ -35,6 +35,8 @@ management:
       show-details: never
 
 app:
+  agent:
+    engine: ${APP_AGENT_ENGINE:langchain4j}
   jwt:
     secret: ${JWT_SECRET:dev-secret-change-in-production-min-256-bits-please-use-long-random-string}
     expiration-ms: ${JWT_EXPIRATION_MS:86400000}

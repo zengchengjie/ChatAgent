@@ -13,6 +13,7 @@ public class AppProperties {
     private final Cors cors = new Cors();
     private final RateLimit rateLimit = new RateLimit();
     private final Admin admin = new Admin();
+    private final Agent agent = new Agent();
 
     @Getter
     @Setter
@@ -39,5 +40,12 @@ public class AppProperties {
     public static class Admin {
         private String bootstrapUsername = "admin";
         private String bootstrapPassword = "admin";
+    }
+
+    @Getter
+    @Setter
+    public static class Agent {
+        /** self | langchain4j */
+        private String engine = "langchain4j";
     }
 }
