@@ -125,7 +125,7 @@ public class AgentService {
     }
 
     /**
-     * SSE：工具阶段逻辑与 {@link #chatSync} 相同；最终助手文本用 {@link #emitTextDeltas} 分块推送（避免在同轮再调一次流式 API，节省成本）。
+     * SSE：工具阶段逻辑与 {@link #chatSync} 相同；最终助手文本使用 DashScope 流式 API 实现真实 token 级流式。
      */
     public void chatStream(Long userId, String sessionId, String userContent, SseEmitter emitter) {
         String traceId = UUID.randomUUID().toString();
@@ -194,10 +194,16 @@ public class AgentService {
                     }
                     continue;
                 }
-                // 最终回复：分块 SSE，再落库并发送 done
-                String full = turn.getContent() != null ? turn.getContent() : "";
-                emitTextDeltas(emitter, full);
-                chatService.appendMessage(userId, sessionId, MessageRole.ASSISTANT, full, null, null);
+                // 最终回复：使用 DashScope 流式 API 实现真实 token 级流式
+                final StringBuilder fullText = new StringBuilder();
+                dashScopeClient.streamCompletion(
+                        messages,
+                        tools,
+                        delta -> {
+                            fullText.append(delta);
+                            sendJson(emitter, "delta", Map.of("text", delta));
+                        });
+                chatService.appendMessage(userId, sessionId, MessageRole.ASSISTANT, fullText.toString(), null, null);
                 sendJson(emitter, "done", Map.of("ok", true));
                 return;
             }
@@ -287,21 +293,6 @@ public class AgentService {
             emitter.send(SseEmitter.event().name(event).data(data));
         } catch (IOException e) {
             throw new RuntimeException(e);
-        }
-    }
-
-    /**
-     * 将本轮已得到的完整助手正文切成多段 {@code delta} 事件，模拟流式体验；真实 token 级流式见 {@link
-     * DashScopeClient#streamCompletion}。
-     */
-    private static void emitTextDeltas(SseEmitter emitter, String text) {
-        if (text == null || text.isEmpty()) {
-            return;
-        }
-        final int chunk = 32;
-        for (int i = 0; i < text.length(); i += chunk) {
-            String part = text.substring(i, Math.min(text.length(), i + chunk));
-            sendJson(emitter, "delta", Map.of("text", part));
         }
     }
 }

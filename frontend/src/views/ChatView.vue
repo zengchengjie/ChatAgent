@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { apiJson, ApiError } from '../api/http'
 import { consumeSse } from '../utils/sse'
+import { marked } from 'marked'
 
 interface SessionRow {
   id: string
@@ -176,6 +177,11 @@ function roleLabel(r: MessageRow['role']): string {
       return r
   }
 }
+
+function renderMarkdown(text: string): string {
+  const html = marked.parse(text)
+  return typeof html === 'string' ? html : ''
+}
 </script>
 
 <template>
@@ -206,11 +212,11 @@ function roleLabel(r: MessageRow['role']): string {
       <div class="thread">
         <div v-for="m in messages" :key="m.id" class="bubble-row" :data-role="m.role.toLowerCase()">
           <div class="meta">{{ roleLabel(m.role) }}</div>
-          <div class="bubble">{{ m.content || '' }}</div>
+          <div class="bubble" v-html="renderMarkdown(m.content || '')"></div>
         </div>
         <div v-if="streamPreview" class="bubble-row" data-role="assistant">
           <div class="meta">Assistant</div>
-          <div class="bubble streaming">{{ streamPreview }}</div>
+          <div class="bubble streaming" v-html="renderMarkdown(streamPreview)"></div>
         </div>
       </div>
       <div class="composer">
@@ -346,8 +352,50 @@ function roleLabel(r: MessageRow['role']): string {
   padding: 0.65rem 0.85rem;
   border-radius: 12px;
   border: 1px solid var(--border);
-  white-space: pre-wrap;
-  line-height: 1.45;
+  line-height: 1.6;
+}
+.bubble :deep(*) {
+  margin: 0.5em 0;
+}
+.bubble :deep(p) {
+  margin: 0.5em 0;
+}
+.bubble :deep(ul),
+.bubble :deep(ol) {
+  margin: 0.5em 0 0.5em 1.5em;
+}
+.bubble :deep(code) {
+  background: rgba(0, 0, 0, 0.1);
+  padding: 0.2em 0.4em;
+  border-radius: 3px;
+  font-family: ui-monospace, monospace;
+  font-size: 0.9em;
+}
+.bubble :deep(pre) {
+  background: rgba(0, 0, 0, 0.2);
+  padding: 0.8em;
+  border-radius: 8px;
+  overflow-x: auto;
+}
+.bubble :deep(pre code) {
+  background: transparent;
+  padding: 0;
+}
+.bubble :deep(h1),
+.bubble :deep(h2),
+.bubble :deep(h3) {
+  margin: 0.8em 0 0.4em;
+  font-weight: 600;
+}
+.bubble :deep(h1) { font-size: 1.5em; }
+.bubble :deep(h2) { font-size: 1.3em; }
+.bubble :deep(h3) { font-size: 1.1em; }
+.bubble :deep(blockquote) {
+  border-left: 3px solid var(--border);
+  margin: 0.5em 0;
+  padding: 0.5em 1em;
+  color: var(--muted);
+  background: rgba(0, 0, 0, 0.05);
 }
 .streaming {
   border-style: dashed;
