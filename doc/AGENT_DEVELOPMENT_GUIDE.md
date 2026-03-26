@@ -126,7 +126,112 @@ sequenceDiagram
 
 ---
 
-## 6. 流式（SSE）与「假流式」
+## 6. Phase 2 最小 RAG（`search_knowledge`：embedding-first + preload-local + md-only）
+
+Phase 2 的目标是在 **不修改 Agent 主循环** 的前提下，让模型在需要时调用一个“本地知识检索”工具，从而实现最小可用 RAG。
+
+### 6.1 架构原则（为什么能不改主循环）
+
+- `AgentService` 每轮都把 `ToolRegistry.toolsJson()` 传给模型（见第 3 节第 4 行）。
+- 只要新增一个实现了 `ToolExecutor` 的 Spring Bean，它就会被 `ToolRegistry` 自动收集并出现在 `tools[]` 中。
+- 模型返回 `tool_calls` 时，主循环会调用 `ToolRegistry.execute(...)` 执行工具，并将结果以 `tool` 消息写回 DB，再进入下一轮。
+
+因此 RAG 的“闭环”只需要：
+
+- **新增工具**：`search_knowledge`
+- **新增知识检索服务**：给工具调用
+- **新增数据/入库**：让知识可检索
+
+### 6.2 数据模型（Flyway）
+
+迁移文件：`backend/src/main/resources/db/migration/V4__knowledge.sql`
+
+- **`knowledge_docs`**：文档元信息（标题、来源路径）
+- **`knowledge_chunks`**：切块后的段落/窗口
+  - `chunk_text`：片段文本
+  - `embedding_json`：向量（JSON 数组，`double[]` 序列化）
+  - 额外记录：`doc_title / chunk_index / offset`（便于定位）
+
+### 6.3 预加载（启动时 ingestion runner）
+
+类：`KnowledgeIngestionRunner`（`backend/src/main/java/com/chatagent/knowledge/KnowledgeIngestionRunner.java`）
+
+流程：
+
+1. 启动就检查 `knowledge_chunks` 是否已有数据
+   - 若已有则 **跳过**（避免重复入库）
+2. 扫描本地文档：`backend/src/main/resources/knowledge/*.md`
+3. 对每个 md：
+   - 切块（见 6.4）
+   - 对每个 chunk 先做 embedding（embedding-first）
+   - 写入 `knowledge_chunks`
+
+约束与注意：
+
+- **md-only**：只扫 `knowledge/*.md`
+- **test profile 跳过**：避免测试启动时依赖外部 embeddings
+- **未配置 `DASHSCOPE_API_KEY` 跳过**：避免误启动时直接失败
+
+### 6.4 切块策略（按段落切 + 超长段落二次切）
+
+类：`KnowledgeChunker`（`backend/src/main/java/com/chatagent/knowledge/KnowledgeChunker.java`）
+
+规则：
+
+- 先按空行分段（段落之间至少一段空白行）
+- 段落长度 \(> 1200\) 字符：
+  - 二次切：`windowSize=800`、`overlap=120`
+- 每个 chunk 记录：
+  - `docTitle`：文档标题（文件名去扩展名）
+  - `chunkIndex`：chunk 序号
+  - `offset`：chunk 在原文中的起始偏移
+  - `chunkText`：chunk 文本
+
+### 6.5 Embedding 客户端（DashScope compatible-mode）
+
+类：`DashScopeEmbeddingClient`（`backend/src/main/java/com/chatagent/llm/DashScopeEmbeddingClient.java`）
+
+- 调用：`POST /embeddings`（baseUrl 为 `dashscope.base-url`，与 `DashScopeClient` 共用 `RestClient`）
+- 解析：OpenAI 兼容结构 `data[0].embedding`
+- 输出：`double[]` 向量
+
+### 6.6 检索（KnowledgeService：余弦相似度 top-k）
+
+类：`KnowledgeService`（`backend/src/main/java/com/chatagent/knowledge/KnowledgeService.java`）
+
+实现最小可用版本：
+
+1. 对 query 做 embedding
+2. 全表读取 `knowledge_chunks`（包含向量 JSON）并计算余弦相似度
+3. 排序取 top-k（k 上限在工具侧做保护）
+
+> 这是“最小实现”，后续可演进为：只取候选集合、引入向量索引、或把 embedding 下推到专用向量库。
+
+### 6.7 工具：`search_knowledge`
+
+类：`SearchKnowledgeTool`（`backend/src/main/java/com/chatagent/tools/SearchKnowledgeTool.java`）
+
+- **tool name**：`search_knowledge`
+- **参数**：
+  - `query`：检索问题/关键词
+  - `k`：返回 top-k（工具侧限制在 1-5，防止过大）
+- **返回**：JSON 字符串，结构为：
+  - `chunks[]`：每项包含 `chunkId/docTitle/text/score`
+- **输出限长**：
+  - 单 chunk `text` 会截断
+  - 结果整体也有上限，超了会自适应降低单 chunk 文本长度，避免 tool 消息过大导致上下文污染或超 token
+
+### 6.8 验收（最小闭环）
+
+1. 放 1-2 个示例 md 到 `backend/src/main/resources/knowledge/`
+2. 启动后完成 ingestion（首次启动会入库；再次启动会跳过）
+3. 用户提问命中知识点时，应触发工具调用：
+   - 模型返回 `tool_calls` → `search_knowledge`
+   - 下一轮模型读取 tool 结果 → 生成基于片段的答案
+
+---
+
+## 7. 流式（SSE）与「假流式」
 
 - **工具阶段**：仍用 **非流式** API，保证 `tool_calls` 解析可靠。
 - **最终回复**：当前实现将 **已得到的完整助手正文** 按固定字符数切块，多次发送 `delta` 事件，避免 **同一轮再请求一次流式接口**（省成本；见 `AgentService#emitTextDeltas`）。
@@ -136,7 +241,7 @@ sequenceDiagram
 
 ---
 
-## 7. 可观测与调试
+## 8. 可观测与调试
 
 - **`traceId`**：每次 Agent 请求在 SLF4J **MDC** 中放入 `traceId`，日志 pattern 见 [`application.yml`](backend/src/main/resources/application.yml)。
 - **结构化日志关键字**：`event=llm_call`、`event=tool_call`，便于在日志平台筛选。
@@ -144,7 +249,7 @@ sequenceDiagram
 
 ---
 
-## 8. 代码地图（快速跳转）
+## 9. 代码地图（快速跳转）
 
 | 职责 | 主要类 |
 |------|--------|
@@ -158,7 +263,7 @@ sequenceDiagram
 
 ---
 
-## 9. 扩展阅读
+## 10. 扩展阅读
 
 - 产品范围与 Phase 2（RAG 等）：[AGENT_PROJECT_SPEC.md](AGENT_PROJECT_SPEC.md)
 - 运行与环境变量：[README.md](README.md)、[.env.example](.env.example)
