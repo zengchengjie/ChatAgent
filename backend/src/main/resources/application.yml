@@ -57,6 +57,9 @@ dashscope:
 
 agent:
   max-steps: ${AGENT_MAX_STEPS:8}
+  max-tool-calls-per-turn: ${AGENT_MAX_TOOL_CALLS_PER_TURN:2}
+  max-tool-calls-total: ${AGENT_MAX_TOOL_CALLS_TOTAL:6}
+  tool-timeout-ms: ${AGENT_TOOL_TIMEOUT_MS:2000}
 
 logging:
   level:

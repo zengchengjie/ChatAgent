@@ -18,6 +18,13 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import lombok.RequiredArgsConstructor;
@@ -53,11 +60,16 @@ public class AgentService {
     private final ToolRegistry toolRegistry;
     private final AgentProperties agentProperties;
     private final ObjectMapper objectMapper;
+    private final ExecutorService toolPool = Executors.newCachedThreadPool();
 
     /** 非流式：一次 HTTP 返回完整 reply + 工具步骤摘要（用于 JSON API）。 */
     public AgentChatResponse chatSync(Long userId, String sessionId, String userContent) {
         String traceId = UUID.randomUUID().toString();
         MDC.put("traceId", traceId);
+        int rounds = 0;
+        int toolCallsTotal = 0;
+        int ragCalls = 0;
+        boolean maxStepsHit = false;
         try {
             // 1) 用户输入先持久化，保证后续 reload 能拼进上下文
             chatService.appendMessage(userId, sessionId, MessageRole.USER, userContent, null, null);
@@ -65,6 +77,7 @@ public class AgentService {
             boolean planRecorded = false;
             // 2) 每轮：以 DB 为单一事实来源重载 messages，避免内存与库不一致
             for (int step = 0; step < agentProperties.getMaxSteps(); step++) {
+                rounds++;
                 ArrayNode messages = reloadMessages(userId, sessionId);
                 ArrayNode tools = toolRegistry.toolsJson();
                 long t0 = System.currentTimeMillis();
@@ -80,6 +93,16 @@ public class AgentService {
                     planRecorded = recordPlanStepsSafe(steps, turn.getContent());
                 }
                 if (!turn.getToolCalls().isEmpty()) {
+                    int perTurnLimit = agentProperties.getMaxToolCallsPerTurn();
+                    int totalLimit = agentProperties.getMaxToolCallsTotal();
+                    int actualPerTurn = turn.getToolCalls().size();
+                    if (actualPerTurn > perTurnLimit) {
+                        log.warn(
+                                "event=guardrail_hit traceId={} reason=maxToolCallsPerTurn limit={} actual={}",
+                                traceId,
+                                perTurnLimit,
+                                actualPerTurn);
+                    }
                     // 4a) 模型要求调用工具：先记下 assistant（含 tool_calls），再执行工具并写入 tool 消息
                     String asstContent =
                             turn.getContent() != null && !turn.getContent().isBlank()
@@ -92,16 +115,41 @@ public class AgentService {
                             asstContent,
                             turn.getRawToolCallsJson(),
                             null);
-                    for (ToolCall tc : turn.getToolCalls()) {
+                    List<ToolCall> toRun =
+                            actualPerTurn > perTurnLimit
+                                    ? turn.getToolCalls().subList(0, Math.max(0, perTurnLimit))
+                                    : turn.getToolCalls();
+                    for (ToolCall tc : toRun) {
+                        if (toolCallsTotal >= totalLimit) {
+                            log.warn(
+                                    "event=guardrail_hit traceId={} reason=maxToolCallsTotal limit={} actual={}",
+                                    traceId,
+                                    totalLimit,
+                                    toolCallsTotal);
+                            throw new ApiException(HttpStatus.BAD_REQUEST, "Guardrail hit: max tool calls reached");
+                        }
                         long t1 = System.currentTimeMillis();
                         String result;
                         try {
-                            result = toolRegistry.execute(tc.getName(), tc.getArgumentsJson(), traceId);
+                            result = executeToolWithTimeout(tc.getName(), tc.getArgumentsJson(), traceId);
                             log.info(
                                     "event=tool_call traceId={} tool={} ms={} ok=true",
                                     traceId,
                                     tc.getName(),
                                     System.currentTimeMillis() - t1);
+                        } catch (TimeoutException te) {
+                            log.warn(
+                                    "event=guardrail_hit traceId={} reason=toolTimeoutMs limit={} actual={}",
+                                    traceId,
+                                    agentProperties.getToolTimeoutMs(),
+                                    agentProperties.getToolTimeoutMs());
+                            result = "Error: tool timed out";
+                            log.warn(
+                                    "event=tool_call traceId={} tool={} ms={} ok=false err={}",
+                                    traceId,
+                                    tc.getName(),
+                                    System.currentTimeMillis() - t1,
+                                    te.toString());
                         } catch (Exception e) {
                             result = "Error: " + e.getMessage();
                             log.warn(
@@ -110,6 +158,10 @@ public class AgentService {
                                     tc.getName(),
                                     System.currentTimeMillis() - t1,
                                     e.toString());
+                        }
+                        toolCallsTotal++;
+                        if ("search_knowledge".equals(tc.getName())) {
+                            ragCalls++;
                         }
                         steps.add(
                                 AgentStepResponse.builder()
@@ -128,10 +180,18 @@ public class AgentService {
                 chatService.appendMessage(userId, sessionId, MessageRole.ASSISTANT, text, null, null);
                 return AgentChatResponse.builder().reply(text).steps(steps).build();
             }
+            maxStepsHit = true;
             throw new ApiException(
                     HttpStatus.BAD_REQUEST,
                     "Agent stopped: maximum reasoning steps (" + agentProperties.getMaxSteps() + ") reached.");
         } finally {
+            log.info(
+                    "event=agent_summary traceId={} rounds={} toolCalls={} ragCalls={} maxStepsHit={}",
+                    traceId,
+                    rounds,
+                    toolCallsTotal,
+                    ragCalls,
+                    maxStepsHit);
             MDC.remove("traceId");
         }
     }
@@ -142,10 +202,15 @@ public class AgentService {
     public void chatStream(Long userId, String sessionId, String userContent, SseEmitter emitter) {
         String traceId = UUID.randomUUID().toString();
         MDC.put("traceId", traceId);
+        int rounds = 0;
+        int toolCallsTotal = 0;
+        int ragCalls = 0;
+        boolean maxStepsHit = false;
         try {
             chatService.appendMessage(userId, sessionId, MessageRole.USER, userContent, null, null);
             boolean planSent = false;
             for (int step = 0; step < agentProperties.getMaxSteps(); step++) {
+                rounds++;
                 ArrayNode messages = reloadMessages(userId, sessionId);
                 ArrayNode tools = toolRegistry.toolsJson();
                 long t0 = System.currentTimeMillis();
@@ -160,6 +225,20 @@ public class AgentService {
                     planSent = emitPlanEventsSafe(emitter, turn.getContent(), traceId);
                 }
                 if (!turn.getToolCalls().isEmpty()) {
+                    int perTurnLimit = agentProperties.getMaxToolCallsPerTurn();
+                    int totalLimit = agentProperties.getMaxToolCallsTotal();
+                    int actualPerTurn = turn.getToolCalls().size();
+                    if (actualPerTurn > perTurnLimit) {
+                        log.warn(
+                                "event=guardrail_hit traceId={} reason=maxToolCallsPerTurn limit={} actual={}",
+                                traceId,
+                                perTurnLimit,
+                                actualPerTurn);
+                        sendJson(
+                                emitter,
+                                "guardrail",
+                                Map.of("reason", "maxToolCallsPerTurn", "limit", perTurnLimit, "actual", actualPerTurn));
+                    }
                     // 工具轮：落库 + 向客户端推送 tool_start / tool_end，便于 UI 展示过程
                     String asstContent =
                             turn.getContent() != null && !turn.getContent().isBlank()
@@ -172,7 +251,24 @@ public class AgentService {
                             asstContent,
                             turn.getRawToolCallsJson(),
                             null);
-                    for (ToolCall tc : turn.getToolCalls()) {
+                    List<ToolCall> toRun =
+                            actualPerTurn > perTurnLimit
+                                    ? turn.getToolCalls().subList(0, Math.max(0, perTurnLimit))
+                                    : turn.getToolCalls();
+                    for (ToolCall tc : toRun) {
+                        if (toolCallsTotal >= totalLimit) {
+                            log.warn(
+                                    "event=guardrail_hit traceId={} reason=maxToolCallsTotal limit={} actual={}",
+                                    traceId,
+                                    totalLimit,
+                                    toolCallsTotal);
+                            sendJson(
+                                    emitter,
+                                    "guardrail",
+                                    Map.of("reason", "maxToolCallsTotal", "limit", totalLimit, "actual", toolCallsTotal));
+                            sendJson(emitter, "error", Map.of("message", "Guardrail hit: max tool calls reached"));
+                            return;
+                        }
                         sendJson(
                                 emitter,
                                 "tool_start",
@@ -180,12 +276,37 @@ public class AgentService {
                         long t1 = System.currentTimeMillis();
                         String result;
                         try {
-                            result = toolRegistry.execute(tc.getName(), tc.getArgumentsJson(), traceId);
+                            result = executeToolWithTimeout(tc.getName(), tc.getArgumentsJson(), traceId);
                             log.info(
                                     "event=tool_call traceId={} tool={} ms={} ok=true",
                                     traceId,
                                     tc.getName(),
                                     System.currentTimeMillis() - t1);
+                        } catch (TimeoutException te) {
+                            log.warn(
+                                    "event=guardrail_hit traceId={} reason=toolTimeoutMs limit={} actual={}",
+                                    traceId,
+                                    agentProperties.getToolTimeoutMs(),
+                                    agentProperties.getToolTimeoutMs());
+                            sendJson(
+                                    emitter,
+                                    "guardrail",
+                                    Map.of(
+                                            "reason",
+                                            "toolTimeoutMs",
+                                            "limit",
+                                            agentProperties.getToolTimeoutMs(),
+                                            "actual",
+                                            agentProperties.getToolTimeoutMs(),
+                                            "tool",
+                                            tc.getName()));
+                            result = "Error: tool timed out";
+                            log.warn(
+                                    "event=tool_call traceId={} tool={} ms={} ok=false err={}",
+                                    traceId,
+                                    tc.getName(),
+                                    System.currentTimeMillis() - t1,
+                                    te.toString());
                         } catch (Exception e) {
                             result = "Error: " + e.getMessage();
                             log.warn(
@@ -194,6 +315,10 @@ public class AgentService {
                                     tc.getName(),
                                     System.currentTimeMillis() - t1,
                                     e.toString());
+                        }
+                        toolCallsTotal++;
+                        if ("search_knowledge".equals(tc.getName())) {
+                            ragCalls++;
                         }
                         sendJson(
                                 emitter,
@@ -223,6 +348,7 @@ public class AgentService {
                 sendJson(emitter, "done", Map.of("ok", true));
                 return;
             }
+            maxStepsHit = true;
             sendJson(
                     emitter,
                     "error",
@@ -237,6 +363,13 @@ public class AgentService {
             log.error("event=agent_stream_failed traceId={}", traceId, e);
             sendJson(emitter, "error", Map.of("message", "Internal error"));
         } finally {
+            log.info(
+                    "event=agent_summary traceId={} rounds={} toolCalls={} ragCalls={} maxStepsHit={}",
+                    traceId,
+                    rounds,
+                    toolCallsTotal,
+                    ragCalls,
+                    maxStepsHit);
             MDC.remove("traceId");
             emitter.complete();
         }
@@ -309,6 +442,26 @@ public class AgentService {
             emitter.send(SseEmitter.event().name(event).data(data));
         } catch (IOException e) {
             throw new RuntimeException(e);
+        }
+    }
+
+    private String executeToolWithTimeout(String toolName, String argsJson, String traceId)
+            throws Exception {
+        long timeoutMs = agentProperties.getToolTimeoutMs();
+        Future<String> f =
+                toolPool.submit(
+                        (Callable<String>) () -> toolRegistry.execute(toolName, argsJson, traceId));
+        try {
+            return f.get(timeoutMs, TimeUnit.MILLISECONDS);
+        } catch (TimeoutException te) {
+            f.cancel(true);
+            throw te;
+        } catch (ExecutionException ee) {
+            Throwable c = ee.getCause();
+            if (c instanceof Exception e) {
+                throw e;
+            }
+            throw new RuntimeException(c);
         }
     }
 
