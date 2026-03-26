@@ -2,6 +2,7 @@ package com.chatagent.agent;
 
 import com.chatagent.agent.dto.AgentChatRequest;
 import com.chatagent.agent.dto.AgentChatResponse;
+import com.chatagent.agent.engine.AgentEngineRouter;
 import com.chatagent.chat.ChatService;
 import com.chatagent.security.JwtPrincipal;
 import com.chatagent.security.SecurityUtils;
@@ -54,7 +55,7 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 @RequestMapping("/api/agent")
 public class AgentController {
 
-    private final AgentService agentService;
+    private final AgentEngineRouter agentEngineRouter;
     private final ChatService chatService;
     private final Executor agentTaskExecutor;
 
@@ -66,10 +67,10 @@ public class AgentController {
      * @param agentTaskExecutor Agent 任务线程池（用于流式接口）
      */
     public AgentController(
-            AgentService agentService,
+            AgentEngineRouter agentEngineRouter,
             ChatService chatService,
             @Qualifier("agentTaskExecutor") Executor agentTaskExecutor) {
-        this.agentService = agentService;
+        this.agentEngineRouter = agentEngineRouter;
         this.chatService = chatService;
         this.agentTaskExecutor = agentTaskExecutor;
     }
@@ -93,7 +94,7 @@ public class AgentController {
     public AgentChatResponse chat(@Valid @RequestBody AgentChatRequest req) {
         JwtPrincipal p = SecurityUtils.requirePrincipal();
         chatService.requireSessionOwned(p.userId(), req.getSessionId());
-        return agentService.chatSync(p.userId(), req.getSessionId(), req.getContent());
+        return agentEngineRouter.chatSync(p.userId(), req.getSessionId(), req.getContent());
     }
 
     /**
@@ -129,7 +130,7 @@ public class AgentController {
         SseEmitter emitter = new SseEmitter(300_000L);
         // 立即返回 emitter，具体推送在后台线程完成（长时间持有连接）
         agentTaskExecutor.execute(
-                () -> agentService.chatStream(p.userId(), req.getSessionId(), req.getContent(), emitter));
+                () -> agentEngineRouter.chatStream(p.userId(), req.getSessionId(), req.getContent(), emitter));
         return emitter;
     }
 }
