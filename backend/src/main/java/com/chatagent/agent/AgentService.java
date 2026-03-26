@@ -18,6 +18,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.slf4j.MDC;
@@ -38,8 +40,13 @@ public class AgentService {
 
     /** 注入到每条请求最前面的 system 消息，引导模型在合适时调用工具并把工具结果用自然语言总结给用户。 */
     private static final String SYSTEM_PROMPT =
-            "You are a helpful assistant. Use the provided tools when they help answer accurately. "
-                    + "After using a tool, summarize the result for the user in natural language.";
+            "You are a helpful assistant. For complex questions, first provide a concise 1-3 step plan, "
+                    + "then execute the plan by calling tools step-by-step when needed, and finally give a conclusion "
+                    + "with supporting evidence sources (tool outputs or relevant context). "
+                    + "Use provided tools when they help answer accurately.";
+
+    private static final Pattern PLAN_LINE_PATTERN =
+            Pattern.compile("^(?:\\d+[.)]|[-*])\\s+(.*)$");
 
     private final ChatService chatService;
     private final DashScopeClient dashScopeClient;
@@ -55,6 +62,7 @@ public class AgentService {
             // 1) 用户输入先持久化，保证后续 reload 能拼进上下文
             chatService.appendMessage(userId, sessionId, MessageRole.USER, userContent, null, null);
             List<AgentStepResponse> steps = new ArrayList<>();
+            boolean planRecorded = false;
             // 2) 每轮：以 DB 为单一事实来源重载 messages，避免内存与库不一致
             for (int step = 0; step < agentProperties.getMaxSteps(); step++) {
                 ArrayNode messages = reloadMessages(userId, sessionId);
@@ -68,6 +76,9 @@ public class AgentService {
                         System.currentTimeMillis() - t0,
                         turn.getFinishReason(),
                         turn.getToolCalls().size());
+                if (!planRecorded) {
+                    planRecorded = recordPlanStepsSafe(steps, turn.getContent());
+                }
                 if (!turn.getToolCalls().isEmpty()) {
                     // 4a) 模型要求调用工具：先记下 assistant（含 tool_calls），再执行工具并写入 tool 消息
                     String asstContent =
@@ -103,6 +114,7 @@ public class AgentService {
                         steps.add(
                                 AgentStepResponse.builder()
                                         .type("tool")
+                                        .stepIndex(null)
                                         .toolName(tc.getName())
                                         .detail(truncate(result, 500))
                                         .build());
@@ -132,6 +144,7 @@ public class AgentService {
         MDC.put("traceId", traceId);
         try {
             chatService.appendMessage(userId, sessionId, MessageRole.USER, userContent, null, null);
+            boolean planSent = false;
             for (int step = 0; step < agentProperties.getMaxSteps(); step++) {
                 ArrayNode messages = reloadMessages(userId, sessionId);
                 ArrayNode tools = toolRegistry.toolsJson();
@@ -143,6 +156,9 @@ public class AgentService {
                         System.currentTimeMillis() - t0,
                         turn.getFinishReason(),
                         turn.getToolCalls().size());
+                if (!planSent) {
+                    planSent = emitPlanEventsSafe(emitter, turn.getContent(), traceId);
+                }
                 if (!turn.getToolCalls().isEmpty()) {
                     // 工具轮：落库 + 向客户端推送 tool_start / tool_end，便于 UI 展示过程
                     String asstContent =
@@ -294,5 +310,73 @@ public class AgentService {
         } catch (IOException e) {
             throw new RuntimeException(e);
         }
+    }
+
+    private boolean recordPlanStepsSafe(List<AgentStepResponse> steps, String assistantContent) {
+        try {
+            List<String> planSteps = extractPlanSteps(assistantContent);
+            if (planSteps.isEmpty()) {
+                return false;
+            }
+            for (int i = 0; i < planSteps.size(); i++) {
+                steps.add(
+                        AgentStepResponse.builder()
+                                .type("plan")
+                                .stepIndex(i + 1)
+                                .detail(planSteps.get(i))
+                                .build());
+            }
+            return true;
+        } catch (Exception e) {
+            // 规划可视化失败时降级，不中断主链路
+            log.warn("event=plan_record_failed err={}", e.toString());
+            return false;
+        }
+    }
+
+    private boolean emitPlanEventsSafe(SseEmitter emitter, String assistantContent, String traceId) {
+        try {
+            List<String> planSteps = extractPlanSteps(assistantContent);
+            if (planSteps.isEmpty()) {
+                return false;
+            }
+            sendJson(emitter, "plan_start", Map.of("count", planSteps.size()));
+            for (int i = 0; i < planSteps.size(); i++) {
+                sendJson(
+                        emitter,
+                        "plan_step",
+                        Map.of("stepIndex", i + 1, "text", truncate(planSteps.get(i), 300)));
+            }
+            sendJson(emitter, "plan_done", Map.of("ok", true));
+            return true;
+        } catch (Exception e) {
+            // 规划可视化失败时降级，不中断主链路
+            log.warn("event=plan_emit_failed traceId={} err={}", traceId, e.toString());
+            return false;
+        }
+    }
+
+    private static List<String> extractPlanSteps(String assistantContent) {
+        if (assistantContent == null || assistantContent.isBlank()) {
+            return List.of();
+        }
+        List<String> out = new ArrayList<>();
+        for (String raw : assistantContent.split("\\r?\\n")) {
+            String line = raw.trim();
+            if (line.isEmpty()) {
+                continue;
+            }
+            Matcher m = PLAN_LINE_PATTERN.matcher(line);
+            if (m.matches()) {
+                String step = m.group(1).trim();
+                if (!step.isEmpty()) {
+                    out.add(step);
+                }
+            }
+            if (out.size() >= 3) {
+                break;
+            }
+        }
+        return out;
     }
 }

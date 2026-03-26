@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { apiJson, ApiError } from '../api/http'
@@ -22,6 +22,11 @@ interface MessageRow {
   createdAt: string
 }
 
+interface TimelineEvent {
+  type: 'plan_start' | 'plan_step' | 'plan_done' | 'tool_start' | 'tool_end'
+  text: string
+}
+
 const router = useRouter()
 const auth = useAuthStore()
 
@@ -31,10 +36,38 @@ const messages = ref<MessageRow[]>([])
 const input = ref('')
 const busy = ref(false)
 const streamPreview = ref('')
-const toolEvents = ref<string[]>([])
+const timelineEvents = ref<TimelineEvent[]>([])
 const banner = ref('')
 
 const title = computed(() => sessions.value.find((s) => s.id === activeId.value)?.title ?? 'Conversation')
+
+const threadEl = ref<HTMLElement | null>(null)
+const stickToBottom = ref(true)
+
+function nearBottom(el: HTMLElement, thresholdPx = 80): boolean {
+  return el.scrollHeight - el.scrollTop - el.clientHeight <= thresholdPx
+}
+
+function onThreadScroll(): void {
+  const el = threadEl.value
+  if (!el) return
+  stickToBottom.value = nearBottom(el)
+}
+
+async function scrollThreadToBottom(): Promise<void> {
+  const el = threadEl.value
+  if (!el) return
+  await nextTick()
+  // 尽量不抖动：用 rAF 等 DOM 更新完成
+  requestAnimationFrame(() => {
+    el.scrollTop = el.scrollHeight
+  })
+}
+
+async function followIfNeeded(): Promise<void> {
+  if (!stickToBottom.value) return
+  await scrollThreadToBottom()
+}
 
 async function logout() {
   try {
@@ -66,9 +99,11 @@ async function createSession() {
 async function selectSession(id: string) {
   activeId.value = id
   streamPreview.value = ''
-  toolEvents.value = []
+  timelineEvents.value = []
   const msgs = await apiJson<MessageRow[]>(`/api/sessions/${id}/messages`)
   messages.value = msgs
+  stickToBottom.value = true
+  await scrollThreadToBottom()
 }
 
 async function send() {
@@ -81,7 +116,8 @@ async function send() {
   input.value = ''
   busy.value = true
   streamPreview.value = ''
-  toolEvents.value = []
+  timelineEvents.value = []
+  stickToBottom.value = true
   const optimistic: MessageRow = {
     id: -Date.now(),
     role: 'USER',
@@ -91,6 +127,7 @@ async function send() {
     createdAt: new Date().toISOString(),
   }
   messages.value = [...messages.value, optimistic]
+  await scrollThreadToBottom()
 
   try {
     const res = await fetch('/api/agent/chat/stream', {
@@ -114,18 +151,34 @@ async function send() {
       return
     }
     let acc = ''
-    // 后端事件：delta=正文增量；tool_*=侧栏；error/done=结束态（与 AgentService 一致）
+    // 后端事件：delta=正文增量；plan_*/tool_*=侧栏；error/done=结束态（与 AgentService 一致）
     await consumeSse(res, (ev, data) => {
       if (ev === 'delta' && data && typeof data === 'object' && 'text' in data) {
         const piece = String((data as { text?: string }).text ?? '')
         acc += piece
         streamPreview.value = acc
+        void followIfNeeded()
+      } else if (ev === 'plan_start' && data && typeof data === 'object') {
+        const count = Number((data as { count?: number }).count ?? 0)
+        timelineEvents.value = [
+          ...timelineEvents.value,
+          { type: 'plan_start', text: `plan start (${count} step${count === 1 ? '' : 's'})` },
+        ]
+      } else if (ev === 'plan_step' && data && typeof data === 'object') {
+        const stepIndex = Number((data as { stepIndex?: number }).stepIndex ?? 0)
+        const text = String((data as { text?: string }).text ?? '')
+        timelineEvents.value = [
+          ...timelineEvents.value,
+          { type: 'plan_step', text: `plan #${stepIndex}: ${text}` },
+        ]
+      } else if (ev === 'plan_done') {
+        timelineEvents.value = [...timelineEvents.value, { type: 'plan_done', text: 'plan done' }]
       } else if (ev === 'tool_start' && data && typeof data === 'object') {
         const name = String((data as { name?: string }).name ?? 'tool')
-        toolEvents.value = [...toolEvents.value, `start: ${name}`]
+        timelineEvents.value = [...timelineEvents.value, { type: 'tool_start', text: `tool start: ${name}` }]
       } else if (ev === 'tool_end' && data && typeof data === 'object') {
         const name = String((data as { name?: string }).name ?? 'tool')
-        toolEvents.value = [...toolEvents.value, `end: ${name}`]
+        timelineEvents.value = [...timelineEvents.value, { type: 'tool_end', text: `tool end: ${name}` }]
       } else if (ev === 'error') {
         const msg =
           data && typeof data === 'object' && 'message' in data
@@ -152,6 +205,7 @@ async function send() {
 async function reloadThread(sid: string) {
   const msgs = await apiJson<MessageRow[]>(`/api/sessions/${sid}/messages`)
   messages.value = msgs
+  await followIfNeeded()
 }
 
 onMounted(async () => {
@@ -209,7 +263,7 @@ function renderMarkdown(text: string): string {
         <h2>{{ title }}</h2>
         <span v-if="banner" class="banner">{{ banner }}</span>
       </header>
-      <div class="thread">
+      <div ref="threadEl" class="thread" @scroll="onThreadScroll">
         <div v-for="m in messages" :key="m.id" class="bubble-row" :data-role="m.role.toLowerCase()">
           <div class="meta">{{ roleLabel(m.role) }}</div>
           <div class="bubble" v-html="renderMarkdown(m.content || '')"></div>
@@ -232,10 +286,10 @@ function renderMarkdown(text: string): string {
       </div>
     </main>
     <aside class="tools">
-      <h3>Tools</h3>
-      <p v-if="!toolEvents.length" class="muted">Tool steps appear here during a reply.</p>
+      <h3>Process</h3>
+      <p v-if="!timelineEvents.length" class="muted">Plan and tool steps appear here during a reply.</p>
       <ul>
-        <li v-for="(t, i) in toolEvents" :key="i">{{ t }}</li>
+        <li v-for="(t, i) in timelineEvents" :key="i" :class="`event-${t.type}`">{{ t.text }}</li>
       </ul>
     </aside>
   </div>
@@ -245,7 +299,8 @@ function renderMarkdown(text: string): string {
 .layout {
   display: grid;
   grid-template-columns: 240px 1fr 200px;
-  min-height: 100vh;
+  height: 100vh;
+  overflow: hidden;
   background: var(--bg);
   color: var(--text);
 }
@@ -256,6 +311,7 @@ function renderMarkdown(text: string): string {
   padding: 1rem;
   gap: 0.75rem;
   background: var(--panel);
+  min-height: 0;
 }
 .brand {
   font-weight: 700;
@@ -303,7 +359,7 @@ function renderMarkdown(text: string): string {
 .main {
   display: flex;
   flex-direction: column;
-  min-height: 100vh;
+  min-height: 0;
 }
 .top {
   padding: 1rem 1.25rem;
@@ -322,6 +378,7 @@ function renderMarkdown(text: string): string {
 }
 .thread {
   flex: 1;
+  min-height: 0;
   overflow: auto;
   padding: 1rem 1.25rem 1.5rem;
   display: flex;
@@ -439,6 +496,8 @@ textarea {
   font-size: 0.8rem;
   color: var(--muted);
   background: var(--panel);
+  min-height: 0;
+  overflow: auto;
 }
 .tools h3 {
   margin: 0 0 0.5rem;
@@ -448,6 +507,20 @@ textarea {
 .tools ul {
   margin: 0;
   padding-left: 1rem;
+}
+.tools li {
+  margin: 0.25rem 0;
+}
+.tools li.event-plan_start,
+.tools li.event-plan_done {
+  color: #c4b5fd;
+}
+.tools li.event-plan_step {
+  color: #ddd6fe;
+}
+.tools li.event-tool_start,
+.tools li.event-tool_end {
+  color: #86efac;
 }
 .muted {
   color: var(--muted);
