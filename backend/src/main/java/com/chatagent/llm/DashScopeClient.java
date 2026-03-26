@@ -25,9 +25,33 @@ import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientResponseException;
 
 /**
- * 调用阿里云 DashScope「OpenAI 兼容模式」的 Chat Completions：POST {@code /chat/completions}，Bearer 为 {@code DASHSCOPE_API_KEY}。
- *
- * <p>非流式用于 Agent 主循环（解析 {@code tool_calls}）；{@link #streamCompletion} 按行解析 {@code data:} SSE，供需要真实 token 流的场景或测试。
+ * DashScope LLM 客户端：调用阿里云 DashScope 的 Chat Completions API。
+ * 
+ * <p>
+ * 功能：
+ * <ul>
+ *   <li>同步调用：用于 Agent 主循环（解析 tool_calls）</li>
+ *   <li>流式调用：支持 SSE 流式输出（逐 token 推送）</li>
+ *   <li>OpenAI 兼容：使用 DashScope 的 OpenAI 兼容模式</li>
+ *   <li>统一鉴权：通过 Bearer Token 认证</li>
+ * </ul>
+ * 
+ * <p>
+ * 使用场景：
+ * <ul>
+ *   <li>chatCompletion：Agent 推理循环（需要解析 tool_calls）</li>
+ *   <li>streamCompletion：前端流式对话（需要实时显示）</li>
+ * </ul>
+ * 
+ * <p>
+ * 配置要求：
+ * <ul>
+ *   <li>DASHSCOPE_API_KEY：阿里云 DashScope API Key</li>
+ *   <li>baseUrl：DashScope 服务地址</li>
+ *   <li>model：使用的模型名称</li>
+ *   <li>temperature：生成温度参数</li>
+ *   <li>maxTokens：最大输出 token 数</li>
+ * </ul>
  */
 @Service
 @RequiredArgsConstructor
@@ -39,7 +63,16 @@ public class DashScopeClient {
     private final DashScopeProperties props;
     private final ObjectMapper objectMapper;
 
-    /** 同步请求，解析 {@code choices[0].message} 得到正文与/或 tool_calls。 */
+    /**
+     * 同步调用 LLM，解析响应中的 content 和 tool_calls。
+     * 
+     * <p>
+     * 用于 Agent 推理循环，需要解析模型返回的 tool_calls 以决定是否执行工具。
+     * 
+     * @param messages 对话消息列表（OpenAI 格式）
+     * @param tools 可用工具列表（OpenAI tools[] 格式）
+     * @return 包含 content、tool_calls 和 finishReason 的响应对象
+     */
     public AssistantTurn chatCompletion(ArrayNode messages, ArrayNode tools) {
         requireKey();
         ObjectNode body = baseBody(messages, tools, false);
@@ -74,7 +107,14 @@ public class DashScopeClient {
     }
 
     /**
-     * 流式：读取 {@code text/event-stream}，从每行 JSON 的 {@code choices[0].delta.content} 累积 token（遇 {@code [DONE]} 结束）。
+     * 流式调用 LLM，逐 token 推送内容。
+     * 
+     * <p>
+     * 用于前端流式对话，通过 SSE 实时推送每个 token。
+     * 
+     * @param messages 对话消息列表（OpenAI 格式）
+     * @param tools 可用工具列表（OpenAI tools[] 格式）
+     * @param onDelta 每个 token 的回调函数
      */
     public void streamCompletion(ArrayNode messages, ArrayNode tools, java.util.function.Consumer<String> onDelta) {
         requireKey();
@@ -138,7 +178,14 @@ public class DashScopeClient {
         }
     }
 
-    /** 构造与 OpenAI Chat Completions 对齐的请求体（model、messages、tools、stream、temperature、max_tokens）。 */
+    /**
+     * 构造 OpenAI 兼容的请求体。
+     * 
+     * @param messages 对话消息列表
+     * @param tools 可用工具列表
+     * @param stream 是否流式请求
+     * @return 请求体 JSON 对象
+     */
     private ObjectNode baseBody(ArrayNode messages, ArrayNode tools, boolean stream) {
         ObjectNode body = objectMapper.createObjectNode();
         body.put("model", props.getModel());
@@ -152,7 +199,13 @@ public class DashScopeClient {
         return body;
     }
 
-    /** 从非流式 JSON 响应提取 assistant 文本、function tool_calls 列表，以及原始 tool_calls 字符串供落库。 */
+    /**
+     * 解析同步调用的响应，提取 content 和 tool_calls。
+     * 
+     * @param responseJson 原始响应 JSON
+     * @return 包含 content、tool_calls 和原始 tool_calls JSON 的对象
+     * @throws Exception 解析异常
+     */
     private AssistantTurn parseAssistantTurn(String responseJson) throws Exception {
         JsonNode root = objectMapper.readTree(responseJson);
         JsonNode choices = root.get("choices");
@@ -205,6 +258,11 @@ public class DashScopeClient {
                 .build();
     }
 
+    /**
+     * 检查 API Key 是否配置。
+     * 
+     * @throws ApiException API Key 未配置时抛出
+     */
     private void requireKey() {
         if (props.getApiKey() == null || props.getApiKey().isBlank()) {
             throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "DASHSCOPE_API_KEY is not configured");

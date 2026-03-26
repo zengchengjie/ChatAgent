@@ -10,6 +10,39 @@ import java.util.List;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
+/**
+ * 知识库搜索工具：基于向量相似度检索本地知识库中的相关片段。
+ * 
+ * <p>
+ * 功能：
+ * <ul>
+ *   <li>向量搜索：使用嵌入向量计算查询与文档的相似度</li>
+ *   <li>Top-K 检索：返回最相关的 K 个片段</li>
+ *   <li>相似度过滤：通过 minScore 过滤低相关度结果</li>
+ *   <li>文档过滤：通过 docTitleFilter 限定搜索范围</li>
+ *   <li>结果压缩：自动压缩输出以控制工具调用响应大小</li>
+ * </ul>
+ * 
+ * <p>
+ * 使用示例：
+ * <pre>{@code
+ * // 搜索知识库
+ * String result = execute(
+ *     "{\"query\":\"如何使用计算器\",\"k\":3,\"minScore\":0.5}",
+ *     traceId
+ * );
+ * // 返回: {"hit":true,"query":"...","k":3,"minScore":0.5,"chunks":[...]}
+ * }</pre>
+ * 
+ * <p>
+ * 参数说明：
+ * <ul>
+ *   <li>query：搜索查询（必填）</li>
+ *   <li>k：返回结果数量（1-5，默认 3）</li>
+ *   <li>minScore：最小相似度阈值（0-1，默认 0）</li>
+ *   <li>docTitleFilter：文档标题过滤器（可选）</li>
+ * </ul>
+ */
 @Component
 @RequiredArgsConstructor
 public class SearchKnowledgeTool implements ToolExecutor {
@@ -153,4 +186,3 @@ public class SearchKnowledgeTool implements ToolExecutor {
         return s.substring(0, max) + "...";
     }
 }
-

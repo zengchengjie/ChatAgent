@@ -20,6 +20,37 @@ import org.springframework.security.config.Customizer;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 
+/**
+ * 安全配置：配置 Spring Security 的认证、授权和限流。
+ * 
+ * <p>
+ * 配置内容：
+ * <ul>
+ *   <li>JWT 认证：通过 JwtAuthenticationFilter 解析和验证 JWT</li>
+ *   <li>速率限制：通过 AgentRateLimitFilter 限制 Agent API 调用频率</li>
+ *   <li>会话管理：使用 STATELESS 会话策略（无状态）</li>
+ *   <li>权限控制：配置接口的访问权限</li>
+ *   <li>异常处理：统一处理认证和授权异常</li>
+ * </ul>
+ * 
+ * <p>
+ * 访问权限：
+ * <ul>
+ *   <li>POST /api/auth/login：允许匿名访问（登录）</li>
+ *   <li>GET /api/health：允许匿名访问（健康检查）</li>
+ *   <li>/actuator/health：允许匿名访问（Actuator 健康检查）</li>
+ *   <li>其他请求：需要认证</li>
+ * </ul>
+ * 
+ * <p>
+ * 安全特性：
+ * <ul>
+ *   <li>CSRF 关闭：使用 JWT 认证，无需 CSRF 保护</li>
+ *   <li>CORS 启用：允许跨域请求</li>
+ *   <li>无状态会话：使用 JWT，不维护服务器会话状态</li>
+ *   <li>密码加密：使用 BCryptPasswordEncoder 加密密码</li>
+ * </ul>
+ */
 @Configuration
 @EnableWebSecurity
 @EnableMethodSecurity
@@ -29,6 +60,13 @@ public class SecurityConfig {
     private final JwtAuthenticationFilter jwtAuthenticationFilter;
     private final AgentRateLimitFilter agentRateLimitFilter;
 
+    /**
+     * 配置安全过滤链。
+     * 
+     * @param http HTTP 安全配置器
+     * @return 安全过滤链
+     * @throws Exception 配置异常
+     */
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
         http.cors(Customizer.withDefaults())
@@ -69,11 +107,23 @@ public class SecurityConfig {
         return http.build();
     }
 
+    /**
+     * 配置密码编码器。
+     * 
+     * @return BCryptPasswordEncoder 密码编码器
+     */
     @Bean
     public PasswordEncoder passwordEncoder() {
         return new BCryptPasswordEncoder();
     }
 
+    /**
+     * 配置认证管理器。
+     * 
+     * @param config 认证配置
+     * @return AuthenticationManager 认证管理器
+     * @throws Exception 配置异常
+     */
     @Bean
     public AuthenticationManager authenticationManager(AuthenticationConfiguration config)
             throws Exception {

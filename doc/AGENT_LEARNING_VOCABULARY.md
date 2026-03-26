@@ -1060,10 +1060,107 @@ LangChain4j → 学习最佳实践
 
 ---
 
-## 📝 更新日志
+## � 进阶概念
+
+### 22. MDC (Mapped Diagnostic Context) - 映射诊断上下文
+
+**概念**：SLF4J 提供的线程局部上下文存储，用于在日志中添加追踪信息。
+
+**费曼解释**：
+
+> 想象你在餐厅点餐：
+>
+> **没有 MDC**：
+> ```
+> 服务员（日志系统）记录：
+> "有人点了菜"
+> "有人结账"
+> "有人投诉"
+> 
+> 问题：不知道是谁的订单！
+> ```
+> 
+> **有 MDC**：
+> ```
+> 服务员先记下桌号（MDC.put("tableId", "12")）
+> 然后记录：
+> "桌号12: 有人点了菜"
+> "桌号12: 有人结账"
+> "桌号12: 有人投诉"
+> 
+> 优点：每条日志都带上桌号，方便追踪！
+> ```
+
+**核心功能**：
+
+```java
+// 1. 设置上下文
+MDC.put("traceId", "abc123");  // 添加追踪 ID
+MDC.put("userId", "user001");  // 添加用户 ID
+MDC.put("requestId", "req456"); // 添加请求 ID
+
+// 2. 记录日志（自动带上 MDC 信息）
+log.info("用户登录成功");  
+// 输出：[traceId=abc123] [userId=user001] [requestId=req456] 用户登录成功
+
+// 3. 清除上下文
+MDC.clear();  // 防止内存泄漏
+```
+
+**在你的项目中**：
+
+```java
+// AgentService.java
+String traceId = UUID.randomUUID().toString();
+MDC.put("traceId", traceId);  // 设置追踪 ID
+
+try {
+    // 所有日志都会自动带上 traceId
+    log.info("开始处理 Agent 请求");
+    
+    // ... 执行逻辑 ...
+    
+} catch (Exception e) {
+    log.error("处理失败", e);  // 也会带上 traceId
+} finally {
+    MDC.clear();  // 清除，防止线程池复用时污染
+}
+```
+
+**日志格式配置**（logback.xml）：
+
+```xml
+<pattern>%d{HH:mm:ss} [%X{traceId}] [%thread] %-5level %logger{36} - %msg%n</pattern>
+```
+
+**输出效果**：
+
+```
+14:30:25 [abc123] [http-nio-8080-exec-1] INFO  AgentService - 开始处理请求
+14:30:26 [abc123] [http-nio-8080-exec-1] INFO  AgentService - 调用 LLM
+14:30:27 [abc123] [http-nio-8080-exec-1] INFO  AgentService - 返回结果
+```
+
+**为什么需要 MDC**：
+
+| 场景 | 没有 MDC | 有 MDC |
+|------|---------|--------|
+| **多用户并发** | 日志混在一起，无法区分 | 每个用户的日志有 userId 标识 |
+| **请求追踪** | 无法追踪一个请求的完整流程 | 用 traceId 可以串联所有日志 |
+| **问题排查** | 需要手动筛选日志 | 直接搜索 traceId 即可 |
+
+**注意事项**：
+
+1. **线程安全**：MDC 是线程局部的，每个线程有自己的 MDC
+2. **及时清理**：使用完后一定要 `MDC.clear()`，防止内存泄漏
+3. **异步场景**：异步线程需要手动传递 MDC（使用 `ThreadLocal`）
+
+---
+
+## �📝 更新日志
 
 | 日期 | 新增词汇 | 作者 |
 |------|---------|------|
 | 2026-03-26 | MMR, BM25, FTS, Precision, 检索链路, 执行护栏, 指标打点 | AI Assistant |
 | 2026-03-26 | SSE, 编排器, 规划器, 推理器, 记忆模块, 工具注册表, 工具执行器, Embedding, 余弦相似度, RAG, Chunk, TraceId, maxSteps | AI Assistant |
-| 2026-03-26 | Spring AI, LangChain4j, 自实现对比 | AI Assistant |
+| 2026-03-26 | Spring AI, LangChain4j, 自实现对比, MDC | AI Assistant |

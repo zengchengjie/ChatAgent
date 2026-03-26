@@ -13,7 +13,35 @@ import net.objecthunter.exp4j.Expression;
 import net.objecthunter.exp4j.ExpressionBuilder;
 import org.springframework.stereotype.Component;
 
-/** 演示用算术工具：仅允许数字与有限运算符，表达式在独立线程求值且 500ms 超时，禁止任意脚本执行。 */
+/**
+ * 算术表达式计算工具（演示用）。
+ * 
+ * <p>
+ * 功能：
+ * <ul>
+ *   <li>支持 + - * / 和括号运算</li>
+ *   <li>表达式安全校验（仅允许数字和运算符）</li>
+ *   <li>独立线程执行，500ms 超时保护</li>
+ *   <li>禁止任意脚本执行（安全沙箱）</li>
+ * </ul>
+ * 
+ * <p>
+ * 使用示例：
+ * <pre>{@code
+ * // 计算 (1+2)*3
+ * String result = execute("{\"expression\":\"(1+2)*3\"}", traceId);
+ * // 返回: "9.0"
+ * }</pre>
+ * 
+ * <p>
+ * 安全特性：
+ * <ul>
+ *   <li>正则校验：仅允许 [0-9+\\-*/().\\s] 字符</li>
+ *   <li>超时控制：500ms 超时自动中断</li>
+ *   <li>结果校验：NaN/Infinity 自动拒绝</li>
+ *   <li>独立线程：避免阻塞主线程</li>
+ * </ul>
+ */
 @Component
 @RequiredArgsConstructor
 public class CalculatorTool implements ToolExecutor {

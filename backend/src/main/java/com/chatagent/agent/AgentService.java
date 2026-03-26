@@ -37,8 +37,11 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 /**
  * Agent 编排层：把「会话历史 + 工具」组装成 OpenAI 兼容请求，循环调用大模型并在本地执行工具，直到得到最终文本或超出步数。
  *
- * <p>数据流要点：用户一句 → 落库 USER → 每轮从 DB 重载为 {@code messages[]} → {@link DashScopeClient} → 若有 tool_calls 则落库
- * ASSISTANT(含 tool_calls_json) 与各 TOOL(含 tool_call_id) → 再请求模型；若无 tool_calls 则落库最终 ASSISTANT 并结束。
+ * <p>
+ * 数据流要点：用户一句 → 落库 USER → 每轮从 DB 重载为 {@code messages[]} →
+ * {@link DashScopeClient} → 若有 tool_calls 则落库
+ * ASSISTANT(含 tool_calls_json) 与各 TOOL(含 tool_call_id) → 再请求模型；若无 tool_calls
+ * 则落库最终 ASSISTANT 并结束。
  */
 @Service
 @RequiredArgsConstructor
@@ -46,14 +49,12 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 public class AgentService {
 
     /** 注入到每条请求最前面的 system 消息，引导模型在合适时调用工具并把工具结果用自然语言总结给用户。 */
-    private static final String SYSTEM_PROMPT =
-            "You are a helpful assistant. For complex questions, first provide a concise 1-3 step plan, "
-                    + "then execute the plan by calling tools step-by-step when needed, and finally give a conclusion "
-                    + "with supporting evidence sources (tool outputs or relevant context). "
-                    + "Use provided tools when they help answer accurately.";
+    private static final String SYSTEM_PROMPT = "You are a helpful assistant. For complex questions, first provide a concise 1-3 step plan, "
+            + "then execute the plan by calling tools step-by-step when needed, and finally give a conclusion "
+            + "with supporting evidence sources (tool outputs or relevant context). "
+            + "Use provided tools when they help answer accurately.";
 
-    private static final Pattern PLAN_LINE_PATTERN =
-            Pattern.compile("^(?:\\d+[.)]|[-*])\\s+(.*)$");
+    private static final Pattern PLAN_LINE_PATTERN = Pattern.compile("^(?:\\d+[.)]|[-*])\\s+(.*)$");
 
     private final ChatService chatService;
     private final DashScopeClient dashScopeClient;
@@ -61,8 +62,38 @@ public class AgentService {
     private final AgentProperties agentProperties;
     private final ObjectMapper objectMapper;
     private final ExecutorService toolPool = Executors.newCachedThreadPool();
+    private long lastToolCallTime = 0;
+    private final Object toolLock = new Object();
 
-    /** 非流式：一次 HTTP 返回完整 reply + 工具步骤摘要（用于 JSON API）。 */
+    /**
+     * 非流式对话接口：同步执行 Agent 逻辑并返回完整结果。
+     * 
+     * <p>
+     * 执行流程：
+     * <ol>
+     *   <li>用户输入持久化</li>
+     *   <li>循环调用 LLM（最多 maxSteps 轮）</li>
+     *   <li>如有 tool_calls：执行工具（受 maxToolCallsPerTurn 和 maxToolCallsTotal 限制）</li>
+     *   <li>如无 tool_calls：返回最终回复</li>
+     *   <li>超出步数：抛出异常</li>
+     * </ol>
+     * 
+     * <p>
+     * 执行护栏：
+     * <ul>
+     *   <li>maxSteps：推理步数上限（默认 8）</li>
+     *   <li>maxToolCallsPerTurn：每轮工具调用上限（默认 2）</li>
+     *   <li>maxToolCallsTotal：全局工具调用上限（默认 6）</li>
+     *   <li>toolTimeoutMs：单工具超时（默认 2000ms）</li>
+     *   <li>maxPlanSteps：计划步骤上限（默认 3）</li>
+     * </ul>
+     * 
+     * @param userId 用户 ID
+     * @param sessionId 会话 ID
+     * @param userContent 用户输入内容
+     * @return 包含回复文本和工具步骤的响应对象
+     * @throws ApiException 当触发执行护栏（如 maxSteps、maxToolCallsTotal）时抛出
+     */
     public AgentChatResponse chatSync(Long userId, String sessionId, String userContent) {
         String traceId = UUID.randomUUID().toString();
         MDC.put("traceId", traceId);
@@ -104,10 +135,9 @@ public class AgentService {
                                 actualPerTurn);
                     }
                     // 4a) 模型要求调用工具：先记下 assistant（含 tool_calls），再执行工具并写入 tool 消息
-                    String asstContent =
-                            turn.getContent() != null && !turn.getContent().isBlank()
-                                    ? turn.getContent()
-                                    : null;
+                    String asstContent = turn.getContent() != null && !turn.getContent().isBlank()
+                            ? turn.getContent()
+                            : null;
                     chatService.appendMessage(
                             userId,
                             sessionId,
@@ -115,10 +145,9 @@ public class AgentService {
                             asstContent,
                             turn.getRawToolCallsJson(),
                             null);
-                    List<ToolCall> toRun =
-                            actualPerTurn > perTurnLimit
-                                    ? turn.getToolCalls().subList(0, Math.max(0, perTurnLimit))
-                                    : turn.getToolCalls();
+                    List<ToolCall> toRun = actualPerTurn > perTurnLimit
+                            ? turn.getToolCalls().subList(0, Math.max(0, perTurnLimit))
+                            : turn.getToolCalls();
                     for (ToolCall tc : toRun) {
                         if (toolCallsTotal >= totalLimit) {
                             log.warn(
@@ -128,10 +157,11 @@ public class AgentService {
                                     toolCallsTotal);
                             throw new ApiException(HttpStatus.BAD_REQUEST, "Guardrail hit: max tool calls reached");
                         }
+                        enforceToolInterval(traceId);
                         long t1 = System.currentTimeMillis();
                         String result;
                         try {
-                            result = executeToolWithTimeout(tc.getName(), tc.getArgumentsJson(), traceId);
+                            result = executeToolWithRetry(tc.getName(), tc.getArgumentsJson(), traceId, 1);
                             log.info(
                                     "event=tool_call traceId={} tool={} ms={} ok=true",
                                     traceId,
@@ -197,7 +227,47 @@ public class AgentService {
     }
 
     /**
-     * SSE：工具阶段逻辑与 {@link #chatSync} 相同；最终助手文本使用 DashScope 流式 API 实现真实 token 级流式。
+     * SSE 流式对话接口：使用 Server-Sent Events 实时流式返回 Agent 执行过程。
+     * 
+     * <p>
+     * 执行流程：
+     * <ol>
+     *   <li>用户输入持久化</li>
+     *   <li>循环调用 LLM（最多 maxSteps 轮）</li>
+     *   <li>工具阶段：推送 tool_start / tool_end 事件</li>
+     *   <li>计划阶段：推送 plan_start / plan_step / plan_done 事件</li>
+     *   <li>最终回复：使用 DashScope 流式 API 实现 token 级流式</li>
+     *   <li>结束：推送 done 事件</li>
+     * </ol>
+     * 
+     * <p>
+     * SSE 事件类型：
+     * <ul>
+     *   <li>plan_start：计划开始，包含步骤数量</li>
+     *   <li>plan_step：单个计划步骤</li>
+     *   <li>plan_done：计划完成</li>
+     *   <li>tool_start：工具调用开始</li>
+     *   <li>tool_end：工具调用结束</li>
+     *   <li>delta：LLM 响应片段（token 级）</li>
+     *   <li>guardrail：执行护栏触发</li>
+     *   <li>error：错误信息</li>
+     *   <li>done：对话完成</li>
+     * </ul>
+     * 
+     * <p>
+     * 执行护栏（同 chatSync）：
+     * <ul>
+     *   <li>maxSteps：推理步数上限</li>
+     *   <li>maxToolCallsPerTurn：每轮工具调用上限</li>
+     *   <li>maxToolCallsTotal：全局工具调用上限</li>
+     *   <li>toolTimeoutMs：单工具超时</li>
+     *   <li>maxPlanSteps：计划步骤上限</li>
+     * </ul>
+     * 
+     * @param userId 用户 ID
+     * @param sessionId 会话 ID
+     * @param userContent 用户输入内容
+     * @param emitter SSE 发送器
      */
     public void chatStream(Long userId, String sessionId, String userContent, SseEmitter emitter) {
         String traceId = UUID.randomUUID().toString();
@@ -237,13 +307,13 @@ public class AgentService {
                         sendJson(
                                 emitter,
                                 "guardrail",
-                                Map.of("reason", "maxToolCallsPerTurn", "limit", perTurnLimit, "actual", actualPerTurn));
+                                Map.of("reason", "maxToolCallsPerTurn", "limit", perTurnLimit, "actual",
+                                        actualPerTurn));
                     }
                     // 工具轮：落库 + 向客户端推送 tool_start / tool_end，便于 UI 展示过程
-                    String asstContent =
-                            turn.getContent() != null && !turn.getContent().isBlank()
-                                    ? turn.getContent()
-                                    : null;
+                    String asstContent = turn.getContent() != null && !turn.getContent().isBlank()
+                            ? turn.getContent()
+                            : null;
                     chatService.appendMessage(
                             userId,
                             sessionId,
@@ -251,10 +321,9 @@ public class AgentService {
                             asstContent,
                             turn.getRawToolCallsJson(),
                             null);
-                    List<ToolCall> toRun =
-                            actualPerTurn > perTurnLimit
-                                    ? turn.getToolCalls().subList(0, Math.max(0, perTurnLimit))
-                                    : turn.getToolCalls();
+                    List<ToolCall> toRun = actualPerTurn > perTurnLimit
+                            ? turn.getToolCalls().subList(0, Math.max(0, perTurnLimit))
+                            : turn.getToolCalls();
                     for (ToolCall tc : toRun) {
                         if (toolCallsTotal >= totalLimit) {
                             log.warn(
@@ -265,10 +334,12 @@ public class AgentService {
                             sendJson(
                                     emitter,
                                     "guardrail",
-                                    Map.of("reason", "maxToolCallsTotal", "limit", totalLimit, "actual", toolCallsTotal));
+                                    Map.of("reason", "maxToolCallsTotal", "limit", totalLimit, "actual",
+                                            toolCallsTotal));
                             sendJson(emitter, "error", Map.of("message", "Guardrail hit: max tool calls reached"));
                             return;
                         }
+                        enforceToolInterval(traceId);
                         sendJson(
                                 emitter,
                                 "tool_start",
@@ -276,7 +347,7 @@ public class AgentService {
                         long t1 = System.currentTimeMillis();
                         String result;
                         try {
-                            result = executeToolWithTimeout(tc.getName(), tc.getArgumentsJson(), traceId);
+                            result = executeToolWithRetry(tc.getName(), tc.getArgumentsJson(), traceId, 1);
                             log.info(
                                     "event=tool_call traceId={} tool={} ms={} ok=true",
                                     traceId,
@@ -375,14 +446,35 @@ public class AgentService {
         }
     }
 
-    /** 从 DB 拉取当前会话全部消息，并转换为 DashScope/OpenAI 兼容的 messages 数组。 */
+    /**
+     * 从数据库加载当前会话全部消息，并转换为 DashScope/OpenAI 兼容的 messages 数组。
+     * 
+     * <p>
+     * 用途：确保每轮对话都以数据库为单一事实来源，避免内存与数据库不一致。
+     * 
+     * @param userId 用户 ID
+     * @param sessionId 会话 ID
+     * @return DashScope/OpenAI 兼容的 messages 数组
+     */
     private ArrayNode reloadMessages(Long userId, String sessionId) {
         List<MessageResponse> rows = chatService.listMessages(userId, sessionId);
         return toLlmMessages(rows);
     }
 
     /**
-     * DB 行 → API 消息：assistant 行的 tool_calls_json 对应模型返回的 tool_calls；tool 行必须带 tool_call_id 与 assistant 里 id 对齐。
+     * 将数据库消息行转换为 DashScope/OpenAI 兼容的 messages 数组。
+     * 
+     * <p>
+     * 转换规则：
+     * <ul>
+     *   <li>USER → role: "user"</li>
+     *   <li>ASSISTANT → role: "assistant"（含 tool_calls_json 转为 tool_calls）</li>
+     *   <li>TOOL → role: "tool"（含 tool_call_id）</li>
+     *   <li>SYSTEM → 忽略</li>
+     * </ul>
+     * 
+     * @param rows 数据库消息行列表
+     * @return DashScope/OpenAI 兼容的 messages 数组
      */
     private ArrayNode toLlmMessages(List<MessageResponse> rows) {
         ArrayNode arr = objectMapper.createArrayNode();
@@ -424,12 +516,20 @@ public class AgentService {
                     }
                     arr.add(o);
                 }
-                case SYSTEM -> { /* ignore persisted system */ }
+                case SYSTEM -> {
+                    /* ignore persisted system */ }
             }
         }
         return arr;
     }
 
+    /**
+     * 截断字符串到指定长度，超出部分用 "..." 表示。
+     * 
+     * @param s 原始字符串
+     * @param max 最大长度
+     * @return 截断后的字符串
+     */
     private static String truncate(String s, int max) {
         if (s == null) {
             return "";
@@ -437,6 +537,13 @@ public class AgentService {
         return s.length() <= max ? s : s.substring(0, max) + "...";
     }
 
+    /**
+     * 向 SSE 发送 JSON 格式事件。
+     * 
+     * @param emitter SSE 发送器
+     * @param event 事件名称
+     * @param data 事件数据
+     */
     private static void sendJson(SseEmitter emitter, String event, Map<String, ?> data) {
         try {
             emitter.send(SseEmitter.event().name(event).data(data));
@@ -445,12 +552,66 @@ public class AgentService {
         }
     }
 
+    /**
+     * 带重试机制的工具执行方法。
+     * 
+     * <p>
+     * 执行流程：
+     * <ol>
+     *   <li>尝试执行工具（最多 maxRetries + 1 次）</li>
+     *   <li>失败时等待 100ms 后重试</li>
+     *   <li>全部失败后抛出异常</li>
+     * </ol>
+     * 
+     * @param toolName 工具名称
+     * @param argsJson 工具参数（JSON 格式）
+     * @param traceId 追踪 ID
+     * @param attempt 尝试次数（保留参数，暂未使用）
+     * @return 工具执行结果
+     * @throws Exception 工具执行异常
+     */
+    private String executeToolWithRetry(String toolName, String argsJson, String traceId, int attempt)
+            throws Exception {
+        int maxRetries = agentProperties.getMaxToolRetries();
+        for (int retry = 0; retry <= maxRetries; retry++) {
+            try {
+                return executeToolWithTimeout(toolName, argsJson, traceId);
+            } catch (Exception e) {
+                log.warn(
+                        "event=tool_retry traceId={} tool={} attempt={} max={} err={}",
+                        traceId,
+                        toolName,
+                        retry + 1,
+                        maxRetries + 1,
+                        e.getMessage());
+                if (retry < maxRetries) {
+                    Thread.sleep(100);
+                } else {
+                    throw e;
+                }
+            }
+        }
+        throw new RuntimeException("Tool execution failed after all retries");
+    }
+
+    /**
+     * 超时控制的工具执行方法。
+     * 
+     * <p>
+     * 使用线程池异步执行工具，并在超时后中断执行。
+     * 
+     * @param toolName 工具名称
+     * @param argsJson 工具参数（JSON 格式）
+     * @param traceId 追踪 ID
+     * @return 工具执行结果
+     * @throws TimeoutException 工具执行超时
+     * @throws Exception 其他执行异常
+     */
     private String executeToolWithTimeout(String toolName, String argsJson, String traceId)
             throws Exception {
         long timeoutMs = agentProperties.getToolTimeoutMs();
-        Future<String> f =
-                toolPool.submit(
-                        (Callable<String>) () -> toolRegistry.execute(toolName, argsJson, traceId));
+        Future<String> f = toolPool.submit(
+                (Callable<String>) () -> toolRegistry.execute(toolName, argsJson, traceId));
         try {
             return f.get(timeoutMs, TimeUnit.MILLISECONDS);
         } catch (TimeoutException te) {
@@ -465,10 +626,63 @@ public class AgentService {
         }
     }
 
+    /**
+     * 强制工具调用间隔限制。
+     * 
+     * <p>
+     * 确保两次工具调用之间至少间隔 minToolIntervalMs 毫秒，防止调用过于频繁。
+     * 
+     * @param traceId 追踪 ID
+     */
+    private void enforceToolInterval(String traceId) {
+        long minInterval = agentProperties.getMinToolIntervalMs();
+        if (minInterval <= 0) {
+            return;
+        }
+        synchronized (toolLock) {
+            long now = System.currentTimeMillis();
+            long elapsed = now - lastToolCallTime;
+            if (elapsed < minInterval) {
+                long waitTime = minInterval - elapsed;
+                log.debug(
+                        "event=tool_interval_wait traceId={} elapsed={} wait={}ms",
+                        traceId,
+                        elapsed,
+                        waitTime);
+                try {
+                    Thread.sleep(waitTime);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+            lastToolCallTime = System.currentTimeMillis();
+        }
+    }
+
+    /**
+     * 安全地记录计划步骤（非 SSE 模式）。
+     * 
+     * <p>
+     * 执行流程：
+     * <ol>
+     *   <li>提取计划步骤</li>
+     *   <li>检查步骤数量是否超过 maxPlanSteps（超过则降级）</li>
+     *   <li>添加到步骤列表</li>
+     * </ol>
+     * 
+     * @param steps 步骤列表
+     * @param assistantContent LLM 返回的计划文本
+     * @return 是否成功记录计划
+     */
     private boolean recordPlanStepsSafe(List<AgentStepResponse> steps, String assistantContent) {
         try {
             List<String> planSteps = extractPlanSteps(assistantContent);
             if (planSteps.isEmpty()) {
+                return false;
+            }
+            int maxPlanSteps = agentProperties.getMaxPlanSteps();
+            if (planSteps.size() > maxPlanSteps) {
+                log.warn("event=guardrail_hit reason=maxPlanSteps limit={} actual={}", maxPlanSteps, planSteps.size());
                 return false;
             }
             for (int i = 0; i < planSteps.size(); i++) {
@@ -487,10 +701,39 @@ public class AgentService {
         }
     }
 
+    /**
+     * 安全地发送计划事件（SSE 模式）。
+     * 
+     * <p>
+     * 执行流程：
+     * <ol>
+     *   <li>提取计划步骤</li>
+     *   <li>检查步骤数量是否超过 maxPlanSteps（超过则降级并发送 guardrail 事件）</li>
+     *   <li>推送 plan_start / plan_step / plan_done 事件</li>
+     * </ol>
+     * 
+     * @param emitter SSE 发送器
+     * @param assistantContent LLM 返回的计划文本
+     * @param traceId 追踪 ID
+     * @return 是否成功发送计划事件
+     */
     private boolean emitPlanEventsSafe(SseEmitter emitter, String assistantContent, String traceId) {
         try {
             List<String> planSteps = extractPlanSteps(assistantContent);
             if (planSteps.isEmpty()) {
+                return false;
+            }
+            int maxPlanSteps = agentProperties.getMaxPlanSteps();
+            if (planSteps.size() > maxPlanSteps) {
+                log.warn(
+                        "event=guardrail_hit traceId={} reason=maxPlanSteps limit={} actual={}",
+                        traceId,
+                        maxPlanSteps,
+                        planSteps.size());
+                sendJson(
+                        emitter,
+                        "guardrail",
+                        Map.of("reason", "maxPlanSteps", "limit", maxPlanSteps, "actual", planSteps.size()));
                 return false;
             }
             sendJson(emitter, "plan_start", Map.of("count", planSteps.size()));
@@ -509,6 +752,20 @@ public class AgentService {
         }
     }
 
+    /**
+     * 从 LLM 返回的计划文本中提取计划步骤。
+     * 
+     * <p>
+     * 提取规则：
+     * <ul>
+     *   <li>匹配数字序号（如 "1. "、"2)"）</li>
+     *   <li>匹配项目符号（如 "- "、"* "）</li>
+     *   <li>最多提取 3 个步骤</li>
+     * </ul>
+     * 
+     * @param assistantContent LLM 返回的计划文本
+     * @return 提取的计划步骤列表
+     */
     private static List<String> extractPlanSteps(String assistantContent) {
         if (assistantContent == null || assistantContent.isBlank()) {
             return List.of();
