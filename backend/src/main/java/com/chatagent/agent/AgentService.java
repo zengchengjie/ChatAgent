@@ -1,5 +1,6 @@
 package com.chatagent.agent;
 
+import com.chatagent.agent.audit.AgentRunAudit;
 import com.chatagent.agent.dto.AgentChatResponse;
 import com.chatagent.agent.dto.AgentStepResponse;
 import com.chatagent.chat.ChatService;
@@ -29,6 +30,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.MDC;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -61,6 +63,7 @@ public class AgentService {
     private final ToolRegistry toolRegistry;
     private final AgentProperties agentProperties;
     private final ObjectMapper objectMapper;
+    private final MeterRegistry meterRegistry;
     private final ExecutorService toolPool = Executors.newCachedThreadPool();
     private long lastToolCallTime = 0;
     private final Object toolLock = new Object();
@@ -97,10 +100,7 @@ public class AgentService {
     public AgentChatResponse chatSync(Long userId, String sessionId, String userContent) {
         String traceId = UUID.randomUUID().toString();
         MDC.put("traceId", traceId);
-        int rounds = 0;
-        int toolCallsTotal = 0;
-        int ragCalls = 0;
-        boolean maxStepsHit = false;
+        AgentRunAudit audit = new AgentRunAudit(traceId);
         try {
             // 1) 用户输入先持久化，保证后续 reload 能拼进上下文
             chatService.appendMessage(userId, sessionId, MessageRole.USER, userContent, null, null);
@@ -108,7 +108,7 @@ public class AgentService {
             boolean planRecorded = false;
             // 2) 每轮：以 DB 为单一事实来源重载 messages，避免内存与库不一致
             for (int step = 0; step < agentProperties.getMaxSteps(); step++) {
-                rounds++;
+                audit.onRound();
                 ArrayNode messages = reloadMessages(userId, sessionId);
                 ArrayNode tools = toolRegistry.toolsJson();
                 long t0 = System.currentTimeMillis();
@@ -149,13 +149,24 @@ public class AgentService {
                             ? turn.getToolCalls().subList(0, Math.max(0, perTurnLimit))
                             : turn.getToolCalls();
                     for (ToolCall tc : toRun) {
-                        if (toolCallsTotal >= totalLimit) {
+                        if (audit.toolCalls() >= totalLimit) {
                             log.warn(
                                     "event=guardrail_hit traceId={} reason=maxToolCallsTotal limit={} actual={}",
                                     traceId,
                                     totalLimit,
-                                    toolCallsTotal);
+                                    audit.toolCalls());
                             throw new ApiException(HttpStatus.BAD_REQUEST, "Guardrail hit: max tool calls reached");
+                        }
+                        int perToolLimit = agentProperties.getMaxToolCallsPerTool();
+                        if (audit.toolCallsFor(tc.getName()) >= perToolLimit) {
+                            log.warn(
+                                    "event=guardrail_hit traceId={} reason=maxToolCallsPerTool limit={} actual={} tool={}",
+                                    traceId,
+                                    perToolLimit,
+                                    audit.toolCallsFor(tc.getName()) + 1,
+                                    tc.getName());
+                            meterRegistry.counter("chatagent.guardrail.hit", "reason", "maxToolCallsPerTool", "engine", "self").increment();
+                            continue;
                         }
                         enforceToolInterval(traceId);
                         long t1 = System.currentTimeMillis();
@@ -189,10 +200,8 @@ public class AgentService {
                                     System.currentTimeMillis() - t1,
                                     e.toString());
                         }
-                        toolCallsTotal++;
-                        if ("search_knowledge".equals(tc.getName())) {
-                            ragCalls++;
-                        }
+                        audit.onToolCall(tc.getName());
+                        meterRegistry.counter("chatagent.tool.calls", "tool", tc.getName(), "engine", "self").increment();
                         steps.add(
                                 AgentStepResponse.builder()
                                         .type("tool")
@@ -210,7 +219,7 @@ public class AgentService {
                 chatService.appendMessage(userId, sessionId, MessageRole.ASSISTANT, text, null, null);
                 return AgentChatResponse.builder().reply(text).steps(steps).build();
             }
-            maxStepsHit = true;
+            audit.setMaxStepsHit(true);
             throw new ApiException(
                     HttpStatus.BAD_REQUEST,
                     "Agent stopped: maximum reasoning steps (" + agentProperties.getMaxSteps() + ") reached.");
@@ -218,10 +227,11 @@ public class AgentService {
             log.info(
                     "event=agent_summary traceId={} rounds={} toolCalls={} ragCalls={} maxStepsHit={}",
                     traceId,
-                    rounds,
-                    toolCallsTotal,
-                    ragCalls,
-                    maxStepsHit);
+                    audit.rounds(),
+                    audit.toolCalls(),
+                    audit.ragCalls(),
+                    audit.maxStepsHit());
+            meterRegistry.counter("chatagent.agent.summary", "engine", "self").increment();
             MDC.remove("traceId");
         }
     }
@@ -272,15 +282,12 @@ public class AgentService {
     public void chatStream(Long userId, String sessionId, String userContent, SseEmitter emitter) {
         String traceId = UUID.randomUUID().toString();
         MDC.put("traceId", traceId);
-        int rounds = 0;
-        int toolCallsTotal = 0;
-        int ragCalls = 0;
-        boolean maxStepsHit = false;
+        AgentRunAudit audit = new AgentRunAudit(traceId);
         try {
             chatService.appendMessage(userId, sessionId, MessageRole.USER, userContent, null, null);
             boolean planSent = false;
             for (int step = 0; step < agentProperties.getMaxSteps(); step++) {
-                rounds++;
+                audit.onRound();
                 ArrayNode messages = reloadMessages(userId, sessionId);
                 ArrayNode tools = toolRegistry.toolsJson();
                 long t0 = System.currentTimeMillis();
@@ -325,19 +332,34 @@ public class AgentService {
                             ? turn.getToolCalls().subList(0, Math.max(0, perTurnLimit))
                             : turn.getToolCalls();
                     for (ToolCall tc : toRun) {
-                        if (toolCallsTotal >= totalLimit) {
+                        if (audit.toolCalls() >= totalLimit) {
                             log.warn(
                                     "event=guardrail_hit traceId={} reason=maxToolCallsTotal limit={} actual={}",
                                     traceId,
                                     totalLimit,
-                                    toolCallsTotal);
+                                    audit.toolCalls());
                             sendJson(
                                     emitter,
                                     "guardrail",
                                     Map.of("reason", "maxToolCallsTotal", "limit", totalLimit, "actual",
-                                            toolCallsTotal));
+                                            audit.toolCalls()));
                             sendJson(emitter, "error", Map.of("message", "Guardrail hit: max tool calls reached"));
                             return;
+                        }
+                        int perToolLimit = agentProperties.getMaxToolCallsPerTool();
+                        if (audit.toolCallsFor(tc.getName()) >= perToolLimit) {
+                            log.warn(
+                                    "event=guardrail_hit traceId={} reason=maxToolCallsPerTool limit={} actual={} tool={}",
+                                    traceId,
+                                    perToolLimit,
+                                    audit.toolCallsFor(tc.getName()) + 1,
+                                    tc.getName());
+                            meterRegistry.counter("chatagent.guardrail.hit", "reason", "maxToolCallsPerTool", "engine", "self").increment();
+                            sendJson(
+                                    emitter,
+                                    "guardrail",
+                                    Map.of("reason", "maxToolCallsPerTool", "limit", perToolLimit, "actual", audit.toolCallsFor(tc.getName()) + 1, "tool", tc.getName()));
+                            continue;
                         }
                         enforceToolInterval(traceId);
                         sendJson(
@@ -387,10 +409,8 @@ public class AgentService {
                                     System.currentTimeMillis() - t1,
                                     e.toString());
                         }
-                        toolCallsTotal++;
-                        if ("search_knowledge".equals(tc.getName())) {
-                            ragCalls++;
-                        }
+                        audit.onToolCall(tc.getName());
+                        meterRegistry.counter("chatagent.tool.calls", "tool", tc.getName(), "engine", "self").increment();
                         sendJson(
                                 emitter,
                                 "tool_end",
@@ -419,7 +439,7 @@ public class AgentService {
                 sendJson(emitter, "done", Map.of("ok", true));
                 return;
             }
-            maxStepsHit = true;
+            audit.setMaxStepsHit(true);
             sendJson(
                     emitter,
                     "error",
@@ -437,10 +457,11 @@ public class AgentService {
             log.info(
                     "event=agent_summary traceId={} rounds={} toolCalls={} ragCalls={} maxStepsHit={}",
                     traceId,
-                    rounds,
-                    toolCallsTotal,
-                    ragCalls,
-                    maxStepsHit);
+                    audit.rounds(),
+                    audit.toolCalls(),
+                    audit.ragCalls(),
+                    audit.maxStepsHit());
+            meterRegistry.counter("chatagent.agent.summary", "engine", "self").increment();
             MDC.remove("traceId");
             emitter.complete();
         }

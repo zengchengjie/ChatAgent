@@ -47,6 +47,24 @@ public class ChatService {
                 .toList();
     }
 
+    @Transactional
+    public void deleteSession(Long userId, String sessionId) {
+        ChatSession s = getOwnedSession(userId, sessionId);
+        messageRepository.deleteBySessionId(s.getId());
+        sessionRepository.delete(s);
+    }
+
+    @Transactional
+    public SessionResponse updateSessionTitle(Long userId, String sessionId, String title) {
+        ChatSession s = getOwnedSession(userId, sessionId);
+        if (title != null && !title.isBlank()) {
+            s.setTitle(title);
+        }
+        s.setUpdatedAt(Instant.now());
+        sessionRepository.save(s);
+        return toSessionResponse(s);
+    }
+
     /**
      * @param toolCallsJson 仅 ASSISTANT 且含 tool_calls 时：存模型返回的 JSON 数组字符串，供回放 OpenAI 多轮格式
      * @param toolCallId 仅 TOOL 消息：必须与上一轮 assistant.tool_calls[].id 一致

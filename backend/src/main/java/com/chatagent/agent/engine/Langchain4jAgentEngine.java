@@ -1,5 +1,6 @@
 package com.chatagent.agent.engine;
 
+import com.chatagent.agent.audit.AgentRunAudit;
 import com.chatagent.agent.dto.AgentChatResponse;
 import com.chatagent.agent.dto.AgentStepResponse;
 import com.chatagent.chat.ChatService;
@@ -12,7 +13,9 @@ import com.chatagent.tools.ToolRegistry;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.langchain4j.agent.tool.Tool;
 import dev.langchain4j.model.openai.OpenAiChatModel;
+import dev.langchain4j.model.openai.OpenAiStreamingChatModel;
 import dev.langchain4j.service.AiServices;
+import dev.langchain4j.service.TokenStream;
 import java.io.IOException;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -20,16 +23,19 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.MDC;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -50,6 +56,7 @@ public class Langchain4jAgentEngine implements AgentEngine {
     private final AgentProperties agentProperties;
     private final ToolRegistry toolRegistry;
     private final ObjectMapper objectMapper;
+    private final MeterRegistry meterRegistry;
 
     private final ExecutorService toolPool = Executors.newCachedThreadPool();
     private final ThreadLocal<ToolCallContext> toolContextLocal = new ThreadLocal<>();
@@ -63,9 +70,8 @@ public class Langchain4jAgentEngine implements AgentEngine {
     public AgentChatResponse chatSync(Long userId, String sessionId, String userContent) {
         String traceId = UUID.randomUUID().toString();
         MDC.put("traceId", traceId);
-        int rounds = 1;
-        boolean maxStepsHit = false;
         ToolCallContext ctx = new ToolCallContext(userId, sessionId, traceId, null);
+        ctx.audit.onRound();
         toolContextLocal.set(ctx);
         try {
             chatService.appendMessage(userId, sessionId, MessageRole.USER, userContent, null, null);
@@ -80,10 +86,11 @@ public class Langchain4jAgentEngine implements AgentEngine {
             log.info(
                     "event=agent_summary traceId={} rounds={} toolCalls={} ragCalls={} maxStepsHit={}",
                     traceId,
-                    rounds,
-                    ctx.toolCallsTotal,
-                    ctx.ragCalls,
-                    maxStepsHit);
+                    ctx.audit.rounds(),
+                    ctx.audit.toolCalls(),
+                    ctx.audit.ragCalls(),
+                    ctx.audit.maxStepsHit());
+            meterRegistry.counter("chatagent.agent.summary", "engine", "langchain4j").increment();
             toolContextLocal.remove();
             MDC.remove("traceId");
         }
@@ -93,17 +100,21 @@ public class Langchain4jAgentEngine implements AgentEngine {
     public void chatStream(Long userId, String sessionId, String userContent, SseEmitter emitter) {
         String traceId = UUID.randomUUID().toString();
         MDC.put("traceId", traceId);
-        int rounds = 1;
-        boolean maxStepsHit = false;
         ToolCallContext ctx = new ToolCallContext(userId, sessionId, traceId, emitter);
+        ctx.audit.onRound();
         toolContextLocal.set(ctx);
         try {
             chatService.appendMessage(userId, sessionId, MessageRole.USER, userContent, null, null);
-            String reply = assistant().chat(buildPromptWithHistory(userId, sessionId, userContent));
+            String reply;
+            if (agentProperties.isLangchainTokenStreamingEnabled()) {
+                reply = streamWithLangchainModel(userId, sessionId, userContent, emitter, traceId);
+            } else {
+                reply = assistant().chat(buildPromptWithHistory(userId, sessionId, userContent));
+                emitTextDeltas(emitter, reply);
+            }
             chatService.appendMessage(userId, sessionId, MessageRole.ASSISTANT, reply, null, null);
 
             emitPlanEventsSafe(emitter, reply, traceId);
-            emitTextDeltas(emitter, reply);
             sendJson(emitter, "done", Map.of("ok", true));
         } catch (ApiException e) {
             sendJson(emitter, "error", Map.of("message", e.getMessage()));
@@ -114,10 +125,11 @@ public class Langchain4jAgentEngine implements AgentEngine {
             log.info(
                     "event=agent_summary traceId={} rounds={} toolCalls={} ragCalls={} maxStepsHit={}",
                     traceId,
-                    rounds,
-                    ctx.toolCallsTotal,
-                    ctx.ragCalls,
-                    maxStepsHit);
+                    ctx.audit.rounds(),
+                    ctx.audit.toolCalls(),
+                    ctx.audit.ragCalls(),
+                    ctx.audit.maxStepsHit());
+            meterRegistry.counter("chatagent.agent.summary", "engine", "langchain4j").increment();
             toolContextLocal.remove();
             MDC.remove("traceId");
             emitter.complete();
@@ -137,6 +149,60 @@ public class Langchain4jAgentEngine implements AgentEngine {
                 .chatLanguageModel(model)
                 .tools(new Lc4jTools())
                 .build();
+    }
+
+    private StreamingAssistant streamingAssistant() {
+        OpenAiStreamingChatModel model =
+                OpenAiStreamingChatModel.builder()
+                        .apiKey(dashScopeProperties.getApiKey())
+                        .baseUrl(dashScopeProperties.getBaseUrl())
+                        .modelName(dashScopeProperties.getModel())
+                        .temperature((double) dashScopeProperties.getTemperature())
+                        .timeout(Duration.ofMillis(dashScopeProperties.getReadTimeoutMs()))
+                        .build();
+        return AiServices.builder(StreamingAssistant.class)
+                .streamingChatLanguageModel(model)
+                .tools(new Lc4jTools())
+                .build();
+    }
+
+    private String streamWithLangchainModel(
+            Long userId, String sessionId, String userContent, SseEmitter emitter, String traceId) {
+        String prompt = buildPromptWithHistory(userId, sessionId, userContent);
+        StringBuilder fullText = new StringBuilder();
+        CountDownLatch done = new CountDownLatch(1);
+        AtomicReference<Throwable> errorRef = new AtomicReference<>();
+        try {
+            TokenStream tokenStream = streamingAssistant().chat(prompt);
+            tokenStream.onNext(
+                    delta -> {
+                        if (delta == null || delta.isEmpty()) {
+                            return;
+                        }
+                        fullText.append(delta);
+                        sendJsonSafe(emitter, "delta", Map.of("text", delta));
+                    });
+            tokenStream.onComplete(ignored -> done.countDown());
+            tokenStream.onError(
+                    e -> {
+                        errorRef.set(e);
+                        done.countDown();
+                    });
+            tokenStream.start();
+            boolean completed = done.await(dashScopeProperties.getReadTimeoutMs() + 10_000L, TimeUnit.MILLISECONDS);
+            if (!completed) {
+                throw new RuntimeException("langchain streaming timeout");
+            }
+            if (errorRef.get() != null) {
+                throw new RuntimeException(errorRef.get());
+            }
+            return fullText.toString();
+        } catch (Exception e) {
+            log.warn("event=langchain_stream_fallback traceId={} err={}", traceId, e.toString());
+            String reply = assistant().chat(prompt);
+            emitTextDeltas(emitter, reply);
+            return reply;
+        }
     }
 
     private String buildPromptWithHistory(Long userId, String sessionId, String userContent) {
@@ -166,6 +232,12 @@ public class Langchain4jAgentEngine implements AgentEngine {
         if (ctx.toolCallsTotal >= agentProperties.getMaxToolCallsTotal()) {
             emitGuardrail(ctx, "maxToolCallsTotal", agentProperties.getMaxToolCallsTotal(), ctx.toolCallsTotal + 1);
             throw new ApiException(HttpStatus.BAD_REQUEST, "Guardrail hit: max tool calls total reached");
+        }
+        int perToolLimit = agentProperties.getMaxToolCallsPerTool();
+        int currentForTool = ctx.toolCallsByName.getOrDefault(toolName, 0);
+        if (currentForTool >= perToolLimit) {
+            emitGuardrail(ctx, "maxToolCallsPerTool", perToolLimit, currentForTool + 1);
+            throw new ApiException(HttpStatus.BAD_REQUEST, "Guardrail hit: max tool calls per tool reached");
         }
 
         sendJsonSafe(ctx.emitter, "tool_start", Map.of("name", toolName, "id", ""));
@@ -219,6 +291,9 @@ public class Langchain4jAgentEngine implements AgentEngine {
         if ("search_knowledge".equals(toolName)) {
             ctx.ragCalls++;
         }
+        ctx.audit.onToolCall(toolName);
+        ctx.toolCallsByName.merge(toolName, 1, Integer::sum);
+        meterRegistry.counter("chatagent.tool.calls", "tool", toolName, "engine", "langchain4j").increment();
         ctx.steps.add(
                 AgentStepResponse.builder()
                         .type("tool")
@@ -240,6 +315,7 @@ public class Langchain4jAgentEngine implements AgentEngine {
                 reason,
                 limit,
                 actual);
+        meterRegistry.counter("chatagent.guardrail.hit", "reason", reason, "engine", "langchain4j").increment();
         sendJsonSafe(ctx.emitter, "guardrail", Map.of("reason", reason, "limit", limit, "actual", actual));
     }
 
@@ -338,6 +414,10 @@ public class Langchain4jAgentEngine implements AgentEngine {
         String chat(String userMessage);
     }
 
+    interface StreamingAssistant {
+        TokenStream chat(String userMessage);
+    }
+
     class Lc4jTools {
         @Tool("Evaluate a numeric arithmetic expression.")
         public String calculator(String expression) throws Exception {
@@ -375,9 +455,11 @@ public class Langchain4jAgentEngine implements AgentEngine {
         final String sessionId;
         final String traceId;
         final SseEmitter emitter;
+        final AgentRunAudit audit;
         int toolCallsThisTurn = 0;
         int toolCallsTotal = 0;
         int ragCalls = 0;
+        final java.util.Map<String, Integer> toolCallsByName = new java.util.HashMap<>();
         final List<AgentStepResponse> steps = new ArrayList<>();
 
         ToolCallContext(Long userId, String sessionId, String traceId, SseEmitter emitter) {
@@ -385,6 +467,7 @@ public class Langchain4jAgentEngine implements AgentEngine {
             this.sessionId = sessionId;
             this.traceId = traceId;
             this.emitter = emitter;
+            this.audit = new AgentRunAudit(traceId);
         }
     }
 }

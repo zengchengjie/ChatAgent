@@ -2,6 +2,7 @@ package com.chatagent.config;
 
 import com.chatagent.security.AgentRateLimitFilter;
 import com.chatagent.security.JwtAuthenticationFilter;
+import com.chatagent.observability.RequestTraceLoggingFilter;
 import jakarta.servlet.DispatcherType;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
@@ -39,6 +40,7 @@ import org.springframework.security.web.authentication.UsernamePasswordAuthentic
  *   <li>POST /api/auth/login：允许匿名访问（登录）</li>
  *   <li>GET /api/health：允许匿名访问（健康检查）</li>
  *   <li>/actuator/health：允许匿名访问（Actuator 健康检查）</li>
+ *   <li>/actuator/prometheus：允许匿名访问（供 Prometheus 抓取）</li>
  *   <li>其他请求：需要认证</li>
  * </ul>
  * 
@@ -59,6 +61,7 @@ public class SecurityConfig {
 
     private final JwtAuthenticationFilter jwtAuthenticationFilter;
     private final AgentRateLimitFilter agentRateLimitFilter;
+    private final RequestTraceLoggingFilter requestTraceLoggingFilter;
 
     /**
      * 配置安全过滤链。
@@ -82,6 +85,8 @@ public class SecurityConfig {
                                         .permitAll()
                                         .requestMatchers("/actuator/health")
                                         .permitAll()
+                                        .requestMatchers("/actuator/prometheus")
+                                        .permitAll()
                                         .anyRequest()
                                         .authenticated())
                 .exceptionHandling(
@@ -102,6 +107,7 @@ public class SecurityConfig {
                                                     response.sendError(
                                                             HttpServletResponse.SC_FORBIDDEN, "Forbidden");
                                                 }))
+                .addFilterBefore(requestTraceLoggingFilter, UsernamePasswordAuthenticationFilter.class)
                 .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)
                 .addFilterAfter(agentRateLimitFilter, JwtAuthenticationFilter.class);
         return http.build();

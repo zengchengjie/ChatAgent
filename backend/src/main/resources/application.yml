@@ -29,10 +29,16 @@ management:
   endpoints:
     web:
       exposure:
-        include: health
+        include: health,prometheus
   endpoint:
     health:
       show-details: never
+  metrics:
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+      slo:
+        http.server.requests: 100ms,300ms,500ms,1s,2s,5s
 
 app:
   agent:
@@ -51,7 +57,7 @@ app:
 dashscope:
   api-key: ${DASHSCOPE_API_KEY:}
   base-url: ${DASHSCOPE_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}
-  model: ${DASHSCOPE_MODEL:qwen-plus}
+  model: ${DASHSCOPE_MODEL:qwen3.5-flash}
   connect-timeout-ms: ${DASHSCOPE_CONNECT_TIMEOUT_MS:10000}
   read-timeout-ms: ${DASHSCOPE_READ_TIMEOUT_MS:120000}
   max-tokens: ${DASHSCOPE_MAX_TOKENS:4096}
@@ -61,7 +67,9 @@ agent:
   max-steps: ${AGENT_MAX_STEPS:8}
   max-tool-calls-per-turn: ${AGENT_MAX_TOOL_CALLS_PER_TURN:2}
   max-tool-calls-total: ${AGENT_MAX_TOOL_CALLS_TOTAL:6}
+  max-tool-calls-per-tool: ${AGENT_MAX_TOOL_CALLS_PER_TOOL:3}
   tool-timeout-ms: ${AGENT_TOOL_TIMEOUT_MS:2000}
+  langchain-token-streaming-enabled: ${AGENT_LANGCHAIN_TOKEN_STREAMING_ENABLED:true}
 
 logging:
   level:

@@ -60,6 +60,10 @@ public class AgentProperties {
     private int maxToolRetries = 1;
     /** 工具调用最小间隔（毫秒），防止调用过于频繁 */
     private long minToolIntervalMs = 500;
+    /** 每个工具名独立的调用总上限（同一请求内），防止单个工具被反复滥用 */
+    private int maxToolCallsPerTool = 3;
+    /** langchain4j 引擎是否启用 token 级流式输出（失败会回退） */
+    private boolean langchainTokenStreamingEnabled = true;
 }
 
 /**

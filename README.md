@@ -85,6 +85,24 @@ npm run dev
 
 Agent 相关接口受 **Redis 滑动窗口限流**（按用户、每分钟），超限 **HTTP 429**。
 
+## 审计与护栏增强（新增）
+
+- self / langchain4j 两个引擎统一接入运行审计模型（`rounds/toolCalls/ragCalls/maxStepsHit`）用于 `event=agent_summary`。
+- 新增每工具独立护栏：`agent.max-tool-calls-per-tool`（默认 `3`），防止单工具被重复刷调用。
+- 新增 Prometheus 指标：
+  - `chatagent.tool.calls{engine,tool}`
+  - `chatagent.guardrail.hit{engine,reason}`
+  - `chatagent.agent.summary{engine}`
+- 监控端点：`/actuator/prometheus`（已默认暴露）。
+
+## IDE 依赖误报处理（LangChain4j）
+
+如 IDE 暂时提示 `langchain4j` 相关符号无法解析，但 `mvn compile` 正常，按以下顺序处理：
+
+1. Maven 面板执行 **Reimport All Maven Projects**  
+2. 仍异常时执行 **Invalidate Caches / Restart**  
+3. 终端复核：`cd backend && mvn -DskipTests compile`
+
 ## 换模型
 
 设置环境变量 **`DASHSCOPE_MODEL`**（如 `qwen-plus`、`qwen-turbo` 等），并查阅当前模型在 **compatible-mode** 下对 **tools** 的支持情况。

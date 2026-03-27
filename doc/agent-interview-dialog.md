@@ -31,7 +31,7 @@
 
 **C3：** 我按“入口、编排、模型、工具、持久化/观测”拆：
 
-- 入口：HTTP 接口提供同步与 SSE 流式两种对话入口，对外都是 `/api/agent/**`。
+- 入口：HTTP 接口提供同步与 SSE 流式两种对话入口，对外都是 `/api/agent/`**。
 - 编排：核心在 `backend/src/main/java/com/chatagent/agent/AgentService.java`，实现 Agent 主循环（maxSteps 内不断请求模型、执行工具、写回 tool 消息）。
 - 模型：`backend/src/main/java/com/chatagent/llm/DashScopeClient.java` 负责 OpenAI-compatible 模式的 chat completions；embedding 走 `backend/src/main/java/com/chatagent/llm/DashScopeEmbeddingClient.java`。
 - 工具：`backend/src/main/java/com/chatagent/tools/ToolRegistry.java` 维护工具白名单与定义集合；每个工具实现 `ToolExecutor`，例如检索工具 `search_knowledge`。
@@ -54,13 +54,14 @@
 
 **C6：** 关键步骤我按状态机说：
 
-1) 把用户消息写入持久化；  
-2) for 循环（step ≤ maxSteps）：从 DB 重载 messages + system prompt + tools 定义；  
-3) 调用模型得到 assistant turn：要么是最终文本，要么包含 tool_calls；  
-4) 如果有 tool_calls：先把 assistant（含 tool_calls_json）落库；再逐个执行工具，把每个工具输出作为 `tool` 角色消息落库，并带上 tool_call_id；然后进入下一轮让模型“看见工具结果”；  
-5) 如果没有 tool_calls：这轮就是最终回答，流式输出（或一次性返回）并落库；结束。
+1. 把用户消息写入持久化；  
+2. for 循环（step ≤ maxSteps）：从 DB 重载 messages + system prompt + tools 定义；  
+3. 调用模型得到 assistant turn：要么是最终文本，要么包含 tool_calls；  
+4. 如果有 tool_calls：先把 assistant（含 tool_calls_json）落库；再逐个执行工具，把每个工具输出作为 `tool` 角色消息落库，并带上 tool_call_id；然后进入下一轮让模型“看见工具结果”；  
+5. 如果没有 tool_calls：这轮就是最终回答，流式输出（或一次性返回）并落库；结束。
 
 最容易写错的地方通常有两个：
+
 - 工具闭环协议：`assistant.tool_calls[].id` 与后续 `tool.tool_call_id` 必须对应，否则模型看不到“哪个工具结果对应哪个调用”，下一轮推理会乱。
 - 工具执行不确定性：参数不可信、工具可能超时/报错，如果不做 guardrails，模型会进入“疯狂调用工具”或“死循环”。
 
@@ -72,7 +73,7 @@
 - 单轮工具调用上限（maxToolCallsPerTurn）与总工具调用上限（maxToolCallsTotal）：防止模型一次性生成几十个 tool call；
 - 工具超时（toolTimeoutMs）：工具本质是外部依赖，可能卡死；超时后返回可解释的错误，让模型做降级；
 - 工具输出截断：例如 `search_knowledge` 对返回 JSON 做总长度限制，避免模型上下文被工具输出撑爆；
-- 限流：对 `/api/agent/**` 做 QPM 限制，避免演示环境刷爆 provider。
+- 限流：对 `/api/agent/`** 做 QPM 限制，避免演示环境刷爆 provider。
 
 这些机制本质上是“把系统从模型主导，变成系统主导”：模型可以建议，但系统要有硬边界。
 
@@ -188,11 +189,11 @@
 
 **C17：** 我会按性价比排序：
 
-1) **chunking 优化**：这是最常见瓶颈。切太大主题混杂、切太小信息不足。我会按标题/段落切块，加 overlap，清洗无意义重复段；  
-2) **k 策略与去冗余**：top-k 不是越大越好。引入 MMR 思路，让 top-k 既相关又不重复；  
-3) **Hybrid 检索**：向量 + 关键词（BM25/FTS）混合召回，尤其对错误码、类名、专有名词非常有效；  
-4) **Rerank**：先粗召回更多候选，再用更强的 reranker（cross-encoder 或轻量 LLM 打分）精排序；  
-5) **评估与闭环**：建立 query-结果-满意度的日志与数据集，用指标驱动优化，不靠拍脑袋。
+1. **chunking 优化**：这是最常见瓶颈。切太大主题混杂、切太小信息不足。我会按标题/段落切块，加 overlap，清洗无意义重复段；  
+2. **k 策略与去冗余**：top-k 不是越大越好。引入 MMR 思路，让 top-k 既相关又不重复；  
+3. **Hybrid 检索**：向量 + 关键词（BM25/FTS）混合召回，尤其对错误码、类名、专有名词非常有效；  
+4. **Rerank**：先粗召回更多候选，再用更强的 reranker（cross-encoder 或轻量 LLM 打分）精排序；  
+5. **评估与闭环**：建立 query-结果-满意度的日志与数据集，用指标驱动优化，不靠拍脑袋。
 
 **I18：** 你怎么判断是“embedding 不行”还是“chunk 切得不好”？
 
@@ -207,8 +208,8 @@
 
 **C19：** 我会区分两类：
 
-1) 证据本身不足或冲突：需要提高 top-k 质量或补充语料；  
-2) 证据足够但模型没用好：需要优化“证据拼装与指令”。
+1. 证据本身不足或冲突：需要提高 top-k 质量或补充语料；  
+2. 证据足够但模型没用好：需要优化“证据拼装与指令”。
 
 工程上我会把检索工具输出做结构化：每个 chunk 带 docTitle、片段、score；并在 system prompt 里明确“回答必须基于检索证据，不足就说不知道”。另外会控制工具输出长度，避免证据太长稀释注意力。
 
@@ -260,10 +261,10 @@
 
 **C23：** 我会按链路拆：
 
-1) 先看工具输出：`search_knowledge` 返回的 top-k chunks 是否真的包含 SSE 事件定义（docTitle、片段是否命中 `backend/src/main/resources/knowledge/sse-stream-events.md` 一类内容）。如果没命中，是 retrieval 问题；  
-2) 如果命中了，看片段是否被截断太狠或 chunk 太碎，导致关键信息丢失，这是 chunking/输出截断问题；  
-3) 如果片段足够，但模型没用上，我会看 system prompt 是否明确“必须引用证据”；并考虑让工具输出包含更明确的字段（例如 eventName 列表），降低模型理解成本；  
-4) 记录一次 traceId 全链路：llm_call → tool_call(search_knowledge) → 下一轮 llm_call，看模型在看到证据后是否仍然选择不引用。这时可能需要 prompt 约束与回答格式约束。
+1. 先看工具输出：`search_knowledge` 返回的 top-k chunks 是否真的包含 SSE 事件定义（docTitle、片段是否命中 `backend/src/main/resources/knowledge/sse-stream-events.md` 一类内容）。如果没命中，是 retrieval 问题；  
+2. 如果命中了，看片段是否被截断太狠或 chunk 太碎，导致关键信息丢失，这是 chunking/输出截断问题；  
+3. 如果片段足够，但模型没用上，我会看 system prompt 是否明确“必须引用证据”；并考虑让工具输出包含更明确的字段（例如 eventName 列表），降低模型理解成本；  
+4. 记录一次 traceId 全链路：llm_call → tool_call(search_knowledge) → 下一轮 llm_call，看模型在看到证据后是否仍然选择不引用。这时可能需要 prompt 约束与回答格式约束。
 
 **I23.1：** 你提到“工具输出截断”，如果截断导致关键信息丢了，你怎么办？
 
@@ -290,9 +291,9 @@
 
 **C25：** 我会用三句话证明：
 
-1) 我把 Agent 当状态机：能清晰讲清楚“消息协议 + tool_call_id 对齐 + 循环停止条件”；  
-2) 我把模型当不可靠外部依赖：能讲 guardrails、超时、限流、错误分层与可观测；  
-3) 我能把 RAG 当检索系统：能讲向量、相似度、top-k、检索质量指标与演进路线，而不是一句“加个向量库就行”。
+1. 我把 Agent 当状态机：能清晰讲清楚“消息协议 + tool_call_id 对齐 + 循环停止条件”；  
+2. 我把模型当不可靠外部依赖：能讲 guardrails、超时、限流、错误分层与可观测；  
+3. 我能把 RAG 当检索系统：能讲向量、相似度、top-k、检索质量指标与演进路线，而不是一句“加个向量库就行”。
 
 ---
 
@@ -303,7 +304,7 @@
 **C26：** 我会像这个项目一样做两期：
 
 - Phase 1（MVP）：会话 + Agent 主循环 + 工具白名单 + SSE + 限流 + 结构化日志。目标是“工具闭环跑通，稳定、可演示、可复盘”。  
-- Phase 2（增强）：最小 RAG 作为一个新工具接入（embedding + top-k），并引入检索质量层（chunk、hybrid、rerank、评估）。目标是“把知识能力补上，并能讲清楚质量怎么评估与迭代”。  
+- Phase 2（增强）：最小 RAG 作为一个新工具接入（embedding + top-k），并引入检索质量层（chunk、hybrid、rerank、评估）。目标是“把知识能力补上，并能讲清楚质量怎么评估与迭代”。
 
 再往后是生产化：摘要记忆、长期记忆、权限与审批、高风险工具治理、多租户隔离、灰度与评估平台。
 
@@ -323,7 +324,7 @@
 **C27：** 我会保持“主循环不变”，把记忆当成两类工具/中间层能力：
 
 - 摘要记忆：当会话变长，定期把旧消息摘要成一条 `system` 或特定角色的记忆消息，只保留近 N 轮原文 + 摘要；  
-- 长期记忆：把用户偏好/关键信息 embedding 入库，回答前先检索用户记忆 top-k，再与知识库检索结果一起拼装成上下文证据。  
+- 长期记忆：把用户偏好/关键信息 embedding 入库，回答前先检索用户记忆 top-k，再与知识库检索结果一起拼装成上下文证据。
 
 关键是把“记忆检索”抽象成工具或服务，不让主循环对具体存储耦合太深。
 
@@ -333,10 +334,10 @@
 
 **C28：** 我也想反问几个问题，确认团队对 Agent 的期待与落地方式：
 
-1) 团队主要的 Agent 场景是客服问答、内部知识助手，还是带动作的工作流编排？风险与合规要求到什么级别？  
-2) 对 RAG 的质量是否有明确指标（例如 Recall@k、人工满意度），有没有评测集与反馈闭环？  
-3) 工具体系未来会接哪些系统（工单、CMDB、发布平台）？是否需要审批与审计？  
-4) 成本预算与 SLA 目标是什么？是“便宜优先”还是“准确优先”？这会影响模型选型、rerank、缓存策略。
+1. 团队主要的 Agent 场景是客服问答、内部知识助手，还是带动作的工作流编排？风险与合规要求到什么级别？  
+2. 对 RAG 的质量是否有明确指标（例如 Recall@k、人工满意度），有没有评测集与反馈闭环？  
+3. 工具体系未来会接哪些系统（工单、CMDB、发布平台）？是否需要审批与审计？  
+4. 成本预算与 SLA 目标是什么？是“便宜优先”还是“准确优先”？这会影响模型选型、rerank、缓存策略。
 
 **I29：** 好，最后一个问题：如果我们给你一个月，你的交付会是什么？
 
@@ -353,11 +354,11 @@
 
 你可以用下面这条“追问路径”来练习自己的面试表达（从宏观到细节、从功能到工程化、从实现到演进）：
 
-1) 端到端链路：入口 → 编排 → 模型 → 工具 → 持久化/流式 → 观测  
-2) AgentLoop 细节：tool_calls 协议、tool_call_id 对齐、循环停止条件  
-3) 工具治理：白名单、schema 引导、参数校验、超时、审计  
-4) RAG：embedding 怎么来、top-k 怎么做、k 怎么选、输出怎么控  
-5) RAG 质量层：chunk、hybrid、MMR、rerank、指标与评估闭环  
-6) 成本与稳定性：guardrails、限流、错误分层、降级策略  
-7) 演进路线：Phase 1→Phase 2→生产化（记忆、审批、评估平台）
+1. 端到端链路：入口 → 编排 → 模型 → 工具 → 持久化/流式 → 观测  
+2. AgentLoop 细节：tool_calls 协议、tool_call_id 对齐、循环停止条件  
+3. 工具治理：白名单、schema 引导、参数校验、超时、审计  
+4. RAG：embedding 怎么来、top-k 怎么做、k 怎么选、输出怎么控  
+5. RAG 质量层：chunk、hybrid、MMR、rerank、指标与评估闭环  
+6. 成本与稳定性：guardrails、限流、错误分层、降级策略  
+7. 演进路线：Phase 1→Phase 2→生产化（记忆、审批、评估平台）
 
