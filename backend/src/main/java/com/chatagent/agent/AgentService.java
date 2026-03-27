@@ -104,6 +104,7 @@ public class AgentService {
         try {
             // 1) 用户输入先持久化，保证后续 reload 能拼进上下文
             chatService.appendMessage(userId, sessionId, MessageRole.USER, userContent, null, null);
+            String sessionModel = chatService.findSessionModel(userId, sessionId).orElse(null);
             List<AgentStepResponse> steps = new ArrayList<>();
             boolean planRecorded = false;
             // 2) 每轮：以 DB 为单一事实来源重载 messages，避免内存与库不一致
@@ -113,7 +114,9 @@ public class AgentService {
                 ArrayNode tools = toolRegistry.toolsJson();
                 long t0 = System.currentTimeMillis();
                 // 3) 工具轮使用非流式 completion，便于解析 tool_calls
-                AssistantTurn turn = dashScopeClient.chatCompletion(messages, tools);
+                AssistantTurn turn = sessionModel != null
+                        ? dashScopeClient.chatCompletion(messages, tools, sessionModel)
+                        : dashScopeClient.chatCompletion(messages, tools);
                 log.info(
                         "event=llm_call traceId={} ms={} finishReason={} toolCalls={}",
                         traceId,
@@ -285,13 +288,16 @@ public class AgentService {
         AgentRunAudit audit = new AgentRunAudit(traceId);
         try {
             chatService.appendMessage(userId, sessionId, MessageRole.USER, userContent, null, null);
+            String sessionModel = chatService.findSessionModel(userId, sessionId).orElse(null);
             boolean planSent = false;
             for (int step = 0; step < agentProperties.getMaxSteps(); step++) {
                 audit.onRound();
                 ArrayNode messages = reloadMessages(userId, sessionId);
                 ArrayNode tools = toolRegistry.toolsJson();
                 long t0 = System.currentTimeMillis();
-                AssistantTurn turn = dashScopeClient.chatCompletion(messages, tools);
+                AssistantTurn turn = sessionModel != null
+                        ? dashScopeClient.chatCompletion(messages, tools, sessionModel)
+                        : dashScopeClient.chatCompletion(messages, tools);
                 log.info(
                         "event=llm_call traceId={} ms={} finishReason={} toolCalls={}",
                         traceId,
@@ -428,13 +434,24 @@ public class AgentService {
                 }
                 // 最终回复：使用 DashScope 流式 API 实现真实 token 级流式
                 final StringBuilder fullText = new StringBuilder();
-                dashScopeClient.streamCompletion(
-                        messages,
-                        tools,
-                        delta -> {
-                            fullText.append(delta);
-                            sendJson(emitter, "delta", Map.of("text", delta));
-                        });
+                if (sessionModel != null) {
+                    dashScopeClient.streamCompletion(
+                            messages,
+                            tools,
+                            sessionModel,
+                            delta -> {
+                                fullText.append(delta);
+                                sendJson(emitter, "delta", Map.of("text", delta));
+                            });
+                } else {
+                    dashScopeClient.streamCompletion(
+                            messages,
+                            tools,
+                            delta -> {
+                                fullText.append(delta);
+                                sendJson(emitter, "delta", Map.of("text", delta));
+                            });
+                }
                 chatService.appendMessage(userId, sessionId, MessageRole.ASSISTANT, fullText.toString(), null, null);
                 sendJson(emitter, "done", Map.of("ok", true));
                 return;

@@ -178,6 +178,113 @@ public class DashScopeClient {
         }
     }
 
+    /** Same as {@link #chatCompletion(ArrayNode, ArrayNode)} but override model name for this request. */
+    public AssistantTurn chatCompletion(ArrayNode messages, ArrayNode tools, String modelOverride) {
+        requireKey();
+        ObjectNode body = baseBody(messages, tools, false);
+        if (modelOverride != null && !modelOverride.isBlank()) {
+            body.put("model", modelOverride);
+        }
+        String json;
+        try {
+            json = objectMapper.writeValueAsString(body);
+        } catch (Exception e) {
+            throw new ApiException(HttpStatus.INTERNAL_SERVER_ERROR, "Failed to build request");
+        }
+        String response;
+        try {
+            response =
+                    dashScopeRestClient
+                            .post()
+                            .uri("/chat/completions")
+                            .header("Authorization", "Bearer " + props.getApiKey())
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .body(json)
+                            .retrieve()
+                            .body(String.class);
+        } catch (RestClientResponseException e) {
+            log.warn("DashScope chat error status={} body={}", e.getStatusCode(), e.getResponseBodyAsString());
+            throw new ApiException(
+                    HttpStatus.BAD_GATEWAY, "LLM provider error: " + e.getStatusCode().value());
+        }
+        try {
+            return parseAssistantTurn(response);
+        } catch (Exception e) {
+            log.error("DashScope parse error", e);
+            throw new ApiException(HttpStatus.BAD_GATEWAY, "Invalid LLM response");
+        }
+    }
+
+    /** Same as {@link #streamCompletion(ArrayNode, ArrayNode, java.util.function.Consumer)} but override model name. */
+    public void streamCompletion(
+            ArrayNode messages,
+            ArrayNode tools,
+            String modelOverride,
+            java.util.function.Consumer<String> onDelta) {
+        requireKey();
+        ObjectNode body = baseBody(messages, tools, true);
+        if (modelOverride != null && !modelOverride.isBlank()) {
+            body.put("model", modelOverride);
+        }
+        String payload;
+        try {
+            payload = objectMapper.writeValueAsString(body);
+        } catch (Exception e) {
+            throw new ApiException(HttpStatus.INTERNAL_SERVER_ERROR, "Failed to build request");
+        }
+        URI uri = URI.create(props.getBaseUrl().replaceAll("/$", "") + "/chat/completions");
+        HttpRequest req =
+                HttpRequest.newBuilder()
+                        .uri(uri)
+                        .header("Authorization", "Bearer " + props.getApiKey())
+                        .header("Content-Type", "application/json")
+                        .timeout(Duration.ofMillis(props.getReadTimeoutMs()))
+                        .POST(HttpRequest.BodyPublishers.ofString(payload))
+                        .build();
+        try {
+            HttpResponse<java.io.InputStream> resp =
+                    dashScopeStreamHttpClient.send(req, HttpResponse.BodyHandlers.ofInputStream());
+            if (resp.statusCode() >= 400) {
+                String err = new String(resp.body().readAllBytes(), StandardCharsets.UTF_8);
+                log.warn("DashScope stream error status={} body={}", resp.statusCode(), err);
+                throw new ApiException(HttpStatus.BAD_GATEWAY, "LLM provider error: " + resp.statusCode());
+            }
+            try (BufferedReader br =
+                    new BufferedReader(new InputStreamReader(resp.body(), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = br.readLine()) != null) {
+                    if (line.isBlank()) {
+                        continue;
+                    }
+                    if (!line.startsWith("data:")) {
+                        continue;
+                    }
+                    String data = line.substring("data:".length()).trim();
+                    if ("[DONE]".equals(data)) {
+                        break;
+                    }
+                    JsonNode chunk = objectMapper.readTree(data);
+                    JsonNode choices = chunk.get("choices");
+                    if (choices == null || !choices.isArray() || choices.isEmpty()) {
+                        continue;
+                    }
+                    JsonNode delta = choices.get(0).get("delta");
+                    if (delta != null && delta.has("content") && !delta.get("content").isNull()) {
+                        String piece = delta.get("content").asText();
+                        if (!piece.isEmpty()) {
+                            onDelta.accept(piece);
+                        }
+                    }
+                }
+            }
+        } catch (ApiException e) {
+            throw e;
+        } catch (Exception e) {
+            log.error("DashScope stream failed", e);
+            throw new ApiException(HttpStatus.BAD_GATEWAY, "LLM stream failed");
+        }
+    }
+
     /**
      * 构造 OpenAI 兼容的请求体。
      * 

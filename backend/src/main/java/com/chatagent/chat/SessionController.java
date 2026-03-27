@@ -3,11 +3,14 @@ package com.chatagent.chat;
 import com.chatagent.chat.dto.CreateSessionRequest;
 import com.chatagent.chat.dto.MessageResponse;
 import com.chatagent.chat.dto.SessionResponse;
+import com.chatagent.common.ApiException;
+import com.chatagent.llm.ModelAllowlist;
 import com.chatagent.security.JwtPrincipal;
 import com.chatagent.security.SecurityUtils;
 import jakarta.validation.Valid;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -59,6 +62,7 @@ import org.springframework.web.bind.annotation.RestController;
 public class SessionController {
 
     private final ChatService chatService;
+    private final ModelAllowlist modelAllowlist;
 
     /**
      * 创建新会话。
@@ -79,7 +83,11 @@ public class SessionController {
     public SessionResponse create(@Valid @RequestBody(required = false) CreateSessionRequest req) {
         JwtPrincipal p = SecurityUtils.requirePrincipal();
         String title = req != null ? req.getTitle() : null;
-        return chatService.createSession(p.userId(), title);
+        String model = req != null ? req.getModel() : null;
+        if (model != null && !model.isBlank() && !modelAllowlist.isAllowed(model)) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "Model not allowed: " + model);
+        }
+        return chatService.createSession(p.userId(), title, model);
     }
 
     /**

@@ -9,6 +9,7 @@ import { marked } from 'marked'
 interface SessionRow {
   id: string
   title: string
+  model?: string
   createdAt: string
   updatedAt: string
 }
@@ -49,6 +50,9 @@ const searchQuery = ref('')
 const editingSessionId = ref<string | null>(null)
 const editingTitle = ref('')
 const showSessionMenu = ref<string | null>(null)
+
+const allowedModels = ref<string[]>([])
+const selectedModel = ref<string>('qwen3.5-flash')
 
 const title = computed(() => sessions.value.find((s) => s.id === activeId.value)?.title ?? 'Conversation')
 
@@ -108,10 +112,24 @@ async function loadSessions() {
   }
 }
 
+async function loadModels() {
+  try {
+    const ms = await apiJson<string[]>('/api/models')
+    if (Array.isArray(ms) && ms.length > 0) {
+      allowedModels.value = ms
+      if (!ms.includes(selectedModel.value)) {
+        selectedModel.value = ms[0]
+      }
+    }
+  } catch {
+    // degrade: keep default
+  }
+}
+
 async function createSession() {
   const s = await apiJson<SessionRow>('/api/sessions', {
     method: 'POST',
-    body: JSON.stringify({}),
+    body: JSON.stringify({ model: selectedModel.value }),
   })
   sessions.value = [s, ...sessions.value]
   await selectSession(s.id)
@@ -302,7 +320,6 @@ async function send() {
         }]
       } else if (ev === 'tool_start' && data && typeof data === 'object') {
         const name = String((data as { name?: string }).name ?? 'tool')
-        const id = String((data as { id?: string }).id ?? '')
         timelineEvents.value = [
           ...timelineEvents.value,
           { 
@@ -376,6 +393,7 @@ async function reloadThread(sid: string) {
 
 onMounted(async () => {
   try {
+    await loadModels()
     await loadSessions()
     if (sessions.value.length === 0) {
       await createSession()
@@ -421,6 +439,13 @@ function formatTime(isoString: string): string {
     <div class="sidebar-overlay" :class="{ open: sidebarOpen }" @click="sidebarOpen = false"></div>
     <aside class="sidebar" :class="{ open: sidebarOpen }">
       <div class="brand">Chat Agent</div>
+      <div class="model-picker">
+        <label class="model-label">Model</label>
+        <select v-model="selectedModel" class="model-select">
+          <option v-for="m in allowedModels" :key="m" :value="m">{{ m }}</option>
+          <option v-if="allowedModels.length === 0" :value="selectedModel">{{ selectedModel }}</option>
+        </select>
+      </div>
       <button class="new-chat" type="button" @click="createSession">+ New chat</button>
       <div class="search-box">
         <input 
@@ -519,7 +544,7 @@ function formatTime(isoString: string): string {
         <textarea
           v-model="input"
           rows="3"
-          placeholder="Message… (try "计算 123*456" or "上海天气")"
+          placeholder="Message… (try &quot;计算 123*456&quot; or &quot;上海天气&quot;)"
           @keydown.enter.exact.prevent="send"
         />
         <button type="button" class="send" :disabled="busy || !activeId" @click="send">
@@ -597,6 +622,24 @@ function formatTime(isoString: string): string {
 .brand {
   font-weight: 700;
   letter-spacing: 0.02em;
+}
+.model-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.model-label {
+  font-size: 0.8rem;
+  opacity: 0.8;
+}
+.model-select {
+  width: 100%;
+  padding: 0.45rem 0.6rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--input-bg);
+  color: var(--text);
+  font-size: 0.85rem;
 }
 .new-chat {
   padding: 0.45rem 0.6rem;

@@ -49,7 +49,7 @@ public class AgentProperties {
     /** 推理超过 8 轮自动终止。抛出异常，终止请求 */
     private int maxSteps = 8;
     /** 每轮模型返回的 tool_calls 最多执行多少个（护栏）。仅记录警告，继续执行 */
-    private int maxToolCallsPerTurn = 2;
+    private int maxToolCallsPerTurn = 3;
     /** 一次请求全局最多执行多少个 tool_call（护栏）。抛出异常，终止请求 */
     private int maxToolCallsTotal = 6;
     /** 单个工具执行超时（毫秒）。记录超时错误，继续执行 */

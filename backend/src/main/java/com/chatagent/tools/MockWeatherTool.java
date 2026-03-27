@@ -2,7 +2,9 @@ package com.chatagent.tools;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.util.HashMap;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
@@ -14,6 +16,16 @@ public class MockWeatherTool implements ToolExecutor {
 
     private static final Set<String> ALLOWED =
             Set.of("beijing", "shanghai", "shenzhen", "guangzhou", "hangzhou", "chengdu");
+
+    private static final Map<String, String> CITY_ALIAS = new HashMap<>();
+    static {
+        CITY_ALIAS.put("北京", "beijing");
+        CITY_ALIAS.put("上海", "shanghai");
+        CITY_ALIAS.put("杭州", "hangzhou");
+        CITY_ALIAS.put("成都", "chengdu");
+        CITY_ALIAS.put("深圳", "shenzhen");
+        CITY_ALIAS.put("广州", "guangzhou");
+    }
 
     private final ObjectMapper objectMapper;
 
@@ -57,7 +69,7 @@ public class MockWeatherTool implements ToolExecutor {
         if (city.length() > 64) {
             return "Error: city name too long";
         }
-        String key = city.toLowerCase(Locale.ROOT);
+        String key = CITY_ALIAS.getOrDefault(city, city).toLowerCase(Locale.ROOT);
         if (!ALLOWED.contains(key)) {
             return "Error: city not in demo whitelist. Allowed: Beijing, Shanghai, Shenzhen, Guangzhou, Hangzhou, Chengdu.";
         }

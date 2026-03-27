@@ -47,9 +47,19 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 public class Langchain4jAgentEngine implements AgentEngine {
 
     private static final String SYSTEM_PROMPT =
-            "You are a helpful assistant for this app. For complex questions, provide a concise 1-3 step plan, "
-                    + "then use tools when needed, and finally summarize conclusion with evidence sources.";
+            "You are a helpful assistant for this app.\n"
+                    + "\n"
+                    + "Rules:\n"
+                    + "- For complex questions, first provide a concise 1-3 step plan.\n"
+                    + "- After the plan, you MUST execute it. Do NOT stop after planning.\n"
+                    + "- When the user asks for weather, you MUST call get_mock_weather for each city.\n"
+                    + "  - Tool input city should be an English/pinyin key when possible: beijing/shanghai/hangzhou/chengdu/shenzhen/guangzhou.\n"
+                    + "- When the user asks for arithmetic, you MUST call calculator(expression).\n"
+                    + "- In the final answer, summarize results and cite evidence sources (tool outputs).\n"
+                    + "- If a tool fails, explain the failure and continue with what you can.";
     private static final Pattern PLAN_LINE_PATTERN = Pattern.compile("^(?:\\d+[.)]|[-*])\\s+(.*)$");
+    private static final Pattern SIMPLE_EXPR_PATTERN =
+            Pattern.compile("(\\d+\\s*(?:[+\\-*/])\\s*\\d+)");
 
     private final ChatService chatService;
     private final DashScopeProperties dashScopeProperties;
@@ -75,7 +85,10 @@ public class Langchain4jAgentEngine implements AgentEngine {
         toolContextLocal.set(ctx);
         try {
             chatService.appendMessage(userId, sessionId, MessageRole.USER, userContent, null, null);
-            String reply = assistant().chat(buildPromptWithHistory(userId, sessionId, userContent));
+            String model = chatService.findSessionModel(userId, sessionId).orElse(null);
+            // Deterministic fallback: if tool calling doesn't happen, still execute obvious tools.
+            maybeExecuteDeterministicToolsSafe(userContent);
+            String reply = assistant(model).chat(buildPromptWithHistory(userId, sessionId, userContent));
             chatService.appendMessage(userId, sessionId, MessageRole.ASSISTANT, reply, null, null);
 
             List<AgentStepResponse> steps = new ArrayList<>();
@@ -105,11 +118,14 @@ public class Langchain4jAgentEngine implements AgentEngine {
         toolContextLocal.set(ctx);
         try {
             chatService.appendMessage(userId, sessionId, MessageRole.USER, userContent, null, null);
+            String model = chatService.findSessionModel(userId, sessionId).orElse(null);
+            // Deterministic fallback: if tool calling doesn't happen, still execute obvious tools.
+            maybeExecuteDeterministicToolsSafe(userContent);
             String reply;
             if (agentProperties.isLangchainTokenStreamingEnabled()) {
-                reply = streamWithLangchainModel(userId, sessionId, userContent, emitter, traceId);
+                reply = streamWithLangchainModel(userId, sessionId, userContent, emitter, traceId, model);
             } else {
-                reply = assistant().chat(buildPromptWithHistory(userId, sessionId, userContent));
+                reply = assistant(model).chat(buildPromptWithHistory(userId, sessionId, userContent));
                 emitTextDeltas(emitter, reply);
             }
             chatService.appendMessage(userId, sessionId, MessageRole.ASSISTANT, reply, null, null);
@@ -136,12 +152,15 @@ public class Langchain4jAgentEngine implements AgentEngine {
         }
     }
 
-    private Assistant assistant() {
+    private Assistant assistant(String modelOverride) {
         OpenAiChatModel model =
                 OpenAiChatModel.builder()
                         .apiKey(dashScopeProperties.getApiKey())
                         .baseUrl(dashScopeProperties.getBaseUrl())
-                        .modelName(dashScopeProperties.getModel())
+                        .modelName(
+                                modelOverride != null && !modelOverride.isBlank()
+                                        ? modelOverride
+                                        : dashScopeProperties.getModel())
                         .temperature((double) dashScopeProperties.getTemperature())
                         .timeout(Duration.ofMillis(dashScopeProperties.getReadTimeoutMs()))
                         .build();
@@ -151,12 +170,15 @@ public class Langchain4jAgentEngine implements AgentEngine {
                 .build();
     }
 
-    private StreamingAssistant streamingAssistant() {
+    private StreamingAssistant streamingAssistant(String modelOverride) {
         OpenAiStreamingChatModel model =
                 OpenAiStreamingChatModel.builder()
                         .apiKey(dashScopeProperties.getApiKey())
                         .baseUrl(dashScopeProperties.getBaseUrl())
-                        .modelName(dashScopeProperties.getModel())
+                        .modelName(
+                                modelOverride != null && !modelOverride.isBlank()
+                                        ? modelOverride
+                                        : dashScopeProperties.getModel())
                         .temperature((double) dashScopeProperties.getTemperature())
                         .timeout(Duration.ofMillis(dashScopeProperties.getReadTimeoutMs()))
                         .build();
@@ -167,13 +189,18 @@ public class Langchain4jAgentEngine implements AgentEngine {
     }
 
     private String streamWithLangchainModel(
-            Long userId, String sessionId, String userContent, SseEmitter emitter, String traceId) {
+            Long userId,
+            String sessionId,
+            String userContent,
+            SseEmitter emitter,
+            String traceId,
+            String modelOverride) {
         String prompt = buildPromptWithHistory(userId, sessionId, userContent);
         StringBuilder fullText = new StringBuilder();
         CountDownLatch done = new CountDownLatch(1);
         AtomicReference<Throwable> errorRef = new AtomicReference<>();
         try {
-            TokenStream tokenStream = streamingAssistant().chat(prompt);
+            TokenStream tokenStream = streamingAssistant(modelOverride).chat(prompt);
             tokenStream.onNext(
                     delta -> {
                         if (delta == null || delta.isEmpty()) {
@@ -199,7 +226,7 @@ public class Langchain4jAgentEngine implements AgentEngine {
             return fullText.toString();
         } catch (Exception e) {
             log.warn("event=langchain_stream_fallback traceId={} err={}", traceId, e.toString());
-            String reply = assistant().chat(prompt);
+            String reply = assistant(modelOverride).chat(prompt);
             emitTextDeltas(emitter, reply);
             return reply;
         }
@@ -217,6 +244,84 @@ public class Langchain4jAgentEngine implements AgentEngine {
         }
         sb.append("\nCurrent user message:\n").append(userContent);
         return sb.toString();
+    }
+
+    private void maybeExecuteDeterministicToolsSafe(String userContent) {
+        try {
+            DeterministicToolResult r = maybeExecuteDeterministicTools(userContent);
+            if (r.weatherCalls > 0 || r.calculatorCalls > 0) {
+                log.info(
+                        "event=deterministic_tool_fallback weatherCalls={} calculatorCalls={} cities={} expression={}",
+                        r.weatherCalls,
+                        r.calculatorCalls,
+                        r.cities,
+                        r.expression);
+            }
+        } catch (ApiException e) {
+            // keep behavior: let ApiException bubble (guardrails), but don't break compilation signature
+            throw e;
+        } catch (Exception e) {
+            log.warn("event=deterministic_tool_fallback_failed err={}", e.toString());
+        }
+    }
+
+    private DeterministicToolResult maybeExecuteDeterministicTools(String userContent) throws Exception {
+        DeterministicToolResult r = new DeterministicToolResult();
+        if (userContent == null || userContent.isBlank()) {
+            return r;
+        }
+        String text = userContent.trim();
+
+        // Weather: if user mentions weather and known cities, call weather tool for each city.
+        boolean wantsWeather = text.contains("天气") || text.toLowerCase().contains("weather");
+        List<String> cities = extractCities(text);
+        r.cities = cities;
+        if (wantsWeather && !cities.isEmpty()) {
+            for (String city : cities) {
+                String argsJson = objectMapper.writeValueAsString(Map.of("city", city));
+                executeToolGuarded("get_mock_weather", argsJson);
+                r.weatherCalls++;
+            }
+        }
+
+        // Calculator: detect simple "a+b" style expression.
+        Matcher m = SIMPLE_EXPR_PATTERN.matcher(text.replace(" ", ""));
+        if (m.find()) {
+            String expr = m.toMatchResult().group(1);
+            r.expression = expr;
+            String argsJson = objectMapper.writeValueAsString(Map.of("expression", expr));
+            executeToolGuarded("calculator", argsJson);
+            r.calculatorCalls++;
+        }
+        return r;
+    }
+
+    private static List<String> extractCities(String text) {
+        // Keep order and de-duplicate
+        java.util.LinkedHashSet<String> out = new java.util.LinkedHashSet<>();
+        // Chinese names
+        if (text.contains("北京")) out.add("北京");
+        if (text.contains("上海")) out.add("上海");
+        if (text.contains("杭州")) out.add("杭州");
+        if (text.contains("成都")) out.add("成都");
+        if (text.contains("深圳")) out.add("深圳");
+        if (text.contains("广州")) out.add("广州");
+        // pinyin/english keys
+        String low = text.toLowerCase();
+        if (low.contains("beijing")) out.add("beijing");
+        if (low.contains("shanghai")) out.add("shanghai");
+        if (low.contains("hangzhou")) out.add("hangzhou");
+        if (low.contains("chengdu")) out.add("chengdu");
+        if (low.contains("shenzhen")) out.add("shenzhen");
+        if (low.contains("guangzhou")) out.add("guangzhou");
+        return new java.util.ArrayList<>(out);
+    }
+
+    private static class DeterministicToolResult {
+        int weatherCalls = 0;
+        int calculatorCalls = 0;
+        List<String> cities = List.of();
+        String expression = null;
     }
 
     private String executeToolGuarded(String toolName, String argsJson) throws Exception {

@@ -27,7 +27,7 @@ class ChatServiceIntegrationTest {
 
     @Test
     void testCreateSession() {
-        SessionResponse session = chatService.createSession(TEST_USER_ID, "Test Session");
+        SessionResponse session = chatService.createSession(TEST_USER_ID, "Test Session", null);
         assertNotNull(session);
         assertNotNull(session.getId());
         assertEquals("Test Session", session.getTitle());
@@ -37,15 +37,15 @@ class ChatServiceIntegrationTest {
 
     @Test
     void testCreateSessionWithDefaultTitle() {
-        SessionResponse session = chatService.createSession(TEST_USER_ID, null);
+        SessionResponse session = chatService.createSession(TEST_USER_ID, null, null);
         assertNotNull(session);
         assertEquals("New chat", session.getTitle());
     }
 
     @Test
     void testListSessions() {
-        chatService.createSession(TEST_USER_ID, "Session 1");
-        chatService.createSession(TEST_USER_ID, "Session 2");
+        chatService.createSession(TEST_USER_ID, "Session 1", null);
+        chatService.createSession(TEST_USER_ID, "Session 2", null);
 
         List<SessionResponse> sessions = chatService.listSessions(TEST_USER_ID);
         assertTrue(sessions.size() >= 2);
@@ -53,7 +53,7 @@ class ChatServiceIntegrationTest {
 
     @Test
     void testAppendMessage() {
-        SessionResponse session = chatService.createSession(TEST_USER_ID, "Test Session");
+        SessionResponse session = chatService.createSession(TEST_USER_ID, "Test Session", null);
 
         ChatMessage userMessage =
                 chatService.appendMessage(
@@ -72,7 +72,7 @@ class ChatServiceIntegrationTest {
 
     @Test
     void testListMessages() {
-        SessionResponse session = chatService.createSession(TEST_USER_ID, "Test Session");
+        SessionResponse session = chatService.createSession(TEST_USER_ID, "Test Session", null);
 
         chatService.appendMessage(TEST_USER_ID, session.getId(), MessageRole.USER, "Hello", null, null);
         chatService.appendMessage(
@@ -86,7 +86,7 @@ class ChatServiceIntegrationTest {
 
     @Test
     void testDeleteSession() {
-        SessionResponse session = chatService.createSession(TEST_USER_ID, "Test Session");
+        SessionResponse session = chatService.createSession(TEST_USER_ID, "Test Session", null);
         String sessionId = session.getId();
 
         chatService.deleteSession(TEST_USER_ID, sessionId);
@@ -97,7 +97,7 @@ class ChatServiceIntegrationTest {
 
     @Test
     void testUpdateSessionTitle() {
-        SessionResponse session = chatService.createSession(TEST_USER_ID, "Original Title");
+        SessionResponse session = chatService.createSession(TEST_USER_ID, "Original Title", null);
         String sessionId = session.getId();
 
         SessionResponse updated =
@@ -108,7 +108,7 @@ class ChatServiceIntegrationTest {
 
     @Test
     void testAccessOtherUserSession() {
-        SessionResponse session = chatService.createSession(1L, "User 1 Session");
+        SessionResponse session = chatService.createSession(1L, "User 1 Session", null);
         String sessionId = session.getId();
 
         assertThrows(
