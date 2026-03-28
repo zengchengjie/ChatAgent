@@ -1,0 +1,15 @@
+[
+  {
+    "query": "How do we correlate browser issues to backend logs in this app?",
+    "expectedDocTitle": "sse-stream-events"
+  },
+  {
+    "query": "What SSE event types does the agent stream API emit?",
+    "expectedDocTitle": "sse-stream-events"
+  },
+  {
+    "query": "What is phase2 security design focus for this project?",
+    "expectedDocTitle": "security-phase2"
+  }
+]
+

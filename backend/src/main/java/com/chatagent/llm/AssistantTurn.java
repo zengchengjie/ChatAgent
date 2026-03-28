@@ -11,4 +11,5 @@ public class AssistantTurn {
     List<ToolCall> toolCalls;
     String finishReason;
     String rawToolCallsJson;
+    TokenUsage usage;
 }

@@ -44,8 +44,18 @@ const busy = ref(false)
 const streamPreview = ref('')
 const timelineEvents = ref<TimelineEvent[]>([])
 const banner = ref('')
-const sidebarOpen = ref(false)
-const toolsOpen = ref(false)
+/** 桌面默认展开侧栏；窄屏默认收起，避免遮挡主内容 */
+function initialSidebarOpen(): boolean {
+  if (typeof window === 'undefined') return true
+  return window.innerWidth > 960
+}
+const sidebarOpen = ref(initialSidebarOpen())
+/** 与侧栏一致：桌面默认展开「过程」列；窄屏默认收起为抽屉 */
+function initialToolsOpen(): boolean {
+  if (typeof window === 'undefined') return true
+  return window.innerWidth > 960
+}
+const toolsOpen = ref(initialToolsOpen())
 const searchQuery = ref('')
 const editingSessionId = ref<string | null>(null)
 const editingTitle = ref('')
@@ -54,7 +64,11 @@ const showSessionMenu = ref<string | null>(null)
 const allowedModels = ref<string[]>([])
 const selectedModel = ref<string>('qwen3.5-flash')
 
-const title = computed(() => sessions.value.find((s) => s.id === activeId.value)?.title ?? 'Conversation')
+const title = computed(() => sessions.value.find((s) => s.id === activeId.value)?.title ?? '对话')
+
+async function goKnowledgeAdmin() {
+  await router.push('/admin/knowledge')
+}
 
 const filteredSessions = computed(() => {
   if (!searchQuery.value.trim()) {
@@ -137,8 +151,8 @@ async function createSession() {
 
 async function deleteSession(id: string) {
   const target = sessions.value.find((s) => s.id === id)
-  const name = target?.title || 'this chat'
-  const ok = window.confirm(`Delete "${name}"? This action cannot be undone.`)
+  const name = target?.title || '该对话'
+  const ok = window.confirm(`确定删除“${name}”吗？此操作不可撤销。`)
   if (!ok) {
     return
   }
@@ -181,7 +195,7 @@ async function saveRename() {
       sessions.value[index] = updated
     }
   } catch (e) {
-    banner.value = 'Failed to rename session'
+    banner.value = '重命名失败'
   } finally {
     editingSessionId.value = null
     editingTitle.value = ''
@@ -215,7 +229,7 @@ async function exportSession(id: string) {
     document.body.removeChild(a)
     URL.revokeObjectURL(url)
   } catch (e) {
-    banner.value = 'Failed to export session'
+    banner.value = '导出失败'
   }
 }
 
@@ -271,13 +285,13 @@ async function send() {
       body: JSON.stringify({ sessionId: sid, content: text }),
     })
     if (res.status === 429) {
-      banner.value = 'Rate limited (429). Please wait a minute.'
+      banner.value = '请求过于频繁（429），请稍后再试。'
       await reloadThread(sid)
       return
     }
     if (!res.ok) {
       const t = await res.text()
-      banner.value = t || `Error ${res.status}`
+      banner.value = t || `错误 ${res.status}`
       await reloadThread(sid)
       return
     }
@@ -294,7 +308,7 @@ async function send() {
           ...timelineEvents.value,
           { 
             type: 'plan_start', 
-            text: `Plan started (${count} step${count === 1 ? '' : 's'})`,
+            text: `计划已开始（共 ${count} 步）`,
             timestamp: new Date().toISOString()
           },
         ]
@@ -314,7 +328,7 @@ async function send() {
       } else if (ev === 'plan_done') {
         timelineEvents.value = [...timelineEvents.value, { 
           type: 'plan_done', 
-          text: 'Plan completed',
+          text: '计划已完成',
           status: 'success',
           timestamp: new Date().toISOString()
         }]
@@ -324,7 +338,7 @@ async function send() {
           ...timelineEvents.value,
           { 
             type: 'tool_start', 
-            text: `Executing: ${name}`,
+            text: `执行中：${name}`,
             toolName: name,
             status: 'running',
             timestamp: new Date().toISOString()
@@ -342,7 +356,7 @@ async function send() {
           updatedEvents[eventIndex] = {
             ...updatedEvents[eventIndex],
             type: 'tool_end',
-            text: `Completed: ${name}`,
+            text: `已完成：${name}`,
             status: ok ? 'success' : 'error',
             detail: detail,
             timestamp: new Date().toISOString()
@@ -357,7 +371,7 @@ async function send() {
           ...timelineEvents.value,
           {
             type: 'guardrail',
-            text: `Guardrail triggered: ${reason} (limit: ${limit}, actual: ${actual})`,
+            text: `触发安全限制：${reason}（上限：${limit}，实际：${actual}）`,
             status: 'error',
             timestamp: new Date().toISOString()
           }
@@ -377,7 +391,7 @@ async function send() {
     if (e instanceof ApiError) {
       banner.value = e.body
     } else {
-      banner.value = 'Request failed'
+      banner.value = '请求失败'
     }
     await reloadThread(sid)
   } finally {
@@ -406,11 +420,11 @@ onMounted(async () => {
 function roleLabel(r: MessageRow['role']): string {
   switch (r) {
     case 'USER':
-      return 'You'
+      return '你'
     case 'ASSISTANT':
-      return 'Assistant'
+      return '助手'
     case 'TOOL':
-      return 'Tool'
+      return '工具'
     default:
       return r
   }
@@ -427,31 +441,34 @@ function formatTime(isoString: string): string {
   const diffMs = now.getTime() - date.getTime()
   const diffSecs = Math.floor(diffMs / 1000)
   
-  if (diffSecs < 60) return `${diffSecs}s ago`
-  if (diffSecs < 3600) return `${Math.floor(diffSecs / 60)}m ago`
-  if (diffSecs < 86400) return `${Math.floor(diffSecs / 3600)}h ago`
+  if (diffSecs < 60) return `${diffSecs} 秒前`
+  if (diffSecs < 3600) return `${Math.floor(diffSecs / 60)} 分钟前`
+  if (diffSecs < 86400) return `${Math.floor(diffSecs / 3600)} 小时前`
   return date.toLocaleDateString()
 }
 </script>
 
 <template>
-  <div class="layout">
+  <div
+    class="layout"
+    :class="{ 'sidebar-collapsed': !sidebarOpen, 'tools-collapsed': !toolsOpen }"
+  >
     <div class="sidebar-overlay" :class="{ open: sidebarOpen }" @click="sidebarOpen = false"></div>
     <aside class="sidebar" :class="{ open: sidebarOpen }">
       <div class="brand">Chat Agent</div>
       <div class="model-picker">
-        <label class="model-label">Model</label>
+        <label class="model-label">模型</label>
         <select v-model="selectedModel" class="model-select">
           <option v-for="m in allowedModels" :key="m" :value="m">{{ m }}</option>
           <option v-if="allowedModels.length === 0" :value="selectedModel">{{ selectedModel }}</option>
         </select>
       </div>
-      <button class="new-chat" type="button" @click="createSession">+ New chat</button>
+      <button class="new-chat" type="button" @click="createSession">+ 新建对话</button>
       <div class="search-box">
         <input 
           v-model="searchQuery" 
           type="text" 
-          placeholder="Search sessions..." 
+          placeholder="搜索对话..." 
           class="search-input"
         />
       </div>
@@ -490,13 +507,13 @@ function formatTime(isoString: string): string {
               </button>
               <div v-if="showSessionMenu === s.id" class="session-dropdown" @click.stop>
                 <button type="button" @click="renameSession(s.id); showSessionMenu = null">
-                  Rename
+                  重命名
                 </button>
                 <button type="button" @click="exportSession(s.id); showSessionMenu = null">
-                  Export
+                  导出
                 </button>
                 <button type="button" @click="deleteSession(s.id); showSessionMenu = null">
-                  Delete
+                  删除
                 </button>
               </div>
             </div>
@@ -505,13 +522,19 @@ function formatTime(isoString: string): string {
       </ul>
       <div class="foot">
         <span class="who">{{ auth.username || 'user' }}</span>
-        <button type="button" class="link" @click="logout">Logout</button>
+        <button type="button" class="link" @click="logout">退出登录</button>
       </div>
     </aside>
     <main class="main">
       <header class="top">
         <div class="header-left">
-          <button class="menu-btn" @click="sidebarOpen = !sidebarOpen" aria-label="Toggle menu">
+          <button
+            class="menu-btn"
+            type="button"
+            @click="sidebarOpen = !sidebarOpen"
+            aria-label="打开或关闭会话列表"
+            :aria-expanded="sidebarOpen"
+          >
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <line x1="3" y1="6" x2="21" y2="6"></line>
               <line x1="3" y1="12" x2="21" y2="12"></line>
@@ -521,7 +544,15 @@ function formatTime(isoString: string): string {
           <h2>{{ title }}</h2>
         </div>
         <div class="header-right">
-          <button class="tools-btn" @click="toolsOpen = !toolsOpen" aria-label="Toggle tools">
+          <button class="btn-secondary" type="button" @click="goKnowledgeAdmin">知识库管理</button>
+          <button
+            class="tools-btn"
+            type="button"
+            title="过程：计划与工具调用"
+            @click="toolsOpen = !toolsOpen"
+            aria-label="打开或关闭过程面板"
+            :aria-expanded="toolsOpen"
+          >
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <circle cx="12" cy="12" r="3"></circle>
               <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
@@ -536,7 +567,7 @@ function formatTime(isoString: string): string {
           <div class="bubble" v-html="renderMarkdown(m.content || '')"></div>
         </div>
         <div v-if="streamPreview" class="bubble-row" data-role="assistant">
-          <div class="meta">Assistant</div>
+          <div class="meta">助手</div>
           <div class="bubble streaming" v-html="renderMarkdown(streamPreview)"></div>
         </div>
       </div>
@@ -544,18 +575,18 @@ function formatTime(isoString: string): string {
         <textarea
           v-model="input"
           rows="3"
-          placeholder="Message… (try &quot;计算 123*456&quot; or &quot;上海天气&quot;)"
+          placeholder="输入消息…（试试“计算 123*456”或“上海天气”）"
           @keydown.enter.exact.prevent="send"
         />
         <button type="button" class="send" :disabled="busy || !activeId" @click="send">
-          {{ busy ? '…' : 'Send' }}
+          {{ busy ? '…' : '发送' }}
         </button>
       </div>
     </main>
     <div class="tools-overlay" :class="{ open: toolsOpen }" @click="toolsOpen = false"></div>
     <aside class="tools" :class="{ open: toolsOpen }">
       <div class="tools-header">
-        <h3>Process</h3>
+        <h3>过程</h3>
         <button class="close-btn" @click="toolsOpen = false" aria-label="Close tools">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <line x1="18" y1="6" x2="6" y2="18"></line>
@@ -563,7 +594,7 @@ function formatTime(isoString: string): string {
           </svg>
         </button>
       </div>
-      <p v-if="!timelineEvents.length" class="muted">Plan and tool steps appear here during a reply.</p>
+      <p v-if="!timelineEvents.length" class="muted">回复时，这里会显示计划与工具调用步骤。</p>
       <ul>
         <li v-for="(t, i) in timelineEvents" :key="i" :class="`event-${t.type} status-${t.status || 'default'}`">
           <div class="event-content">
@@ -873,6 +904,22 @@ function formatTime(isoString: string): string {
   transition: all 0.2s ease;
 }
 
+.btn-secondary {
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 0.5rem 0.75rem;
+  cursor: pointer;
+  font-size: 0.85rem;
+  transition: all 0.2s ease;
+}
+
+.btn-secondary:hover {
+  background: rgba(99, 102, 241, 0.1);
+  border-color: rgba(99, 102, 241, 0.3);
+}
+
 .menu-btn:hover,
 .tools-btn:hover,
 .close-btn:hover {
@@ -1149,6 +1196,51 @@ textarea {
   }
 }
 
+/* 宽屏：汉堡收起左侧栏、齿轮收起右侧「过程」栏（窄屏仍用 transform 抽屉） */
+@media (min-width: 961px) {
+  .layout.sidebar-collapsed:not(.tools-collapsed) {
+    grid-template-columns: 0 minmax(0, 1fr) 200px;
+  }
+
+  .layout.tools-collapsed:not(.sidebar-collapsed) {
+    grid-template-columns: 240px minmax(0, 1fr) 0;
+  }
+
+  .layout.sidebar-collapsed.tools-collapsed {
+    grid-template-columns: 0 minmax(0, 1fr) 0;
+  }
+
+  .layout.sidebar-collapsed .sidebar {
+    min-width: 0;
+    overflow: hidden;
+    padding-left: 0;
+    padding-right: 0;
+    border-right-color: transparent;
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .layout.tools-collapsed .tools {
+    min-width: 0;
+    overflow: hidden;
+    padding-left: 0;
+    padding-right: 0;
+    border-left-color: transparent;
+    opacity: 0;
+    pointer-events: none;
+  }
+}
+
+@media (min-width: 961px) and (max-width: 1200px) {
+  .layout.sidebar-collapsed:not(.tools-collapsed) {
+    grid-template-columns: 0 minmax(0, 1fr) 180px;
+  }
+
+  .layout.tools-collapsed:not(.sidebar-collapsed) {
+    grid-template-columns: 220px minmax(0, 1fr) 0;
+  }
+}
+
 @media (max-width: 960px) {
   .layout {
     grid-template-columns: 1fr;
@@ -1165,10 +1257,12 @@ textarea {
     transform: translateX(-100%);
     transition: transform 0.3s ease;
     border-right: 1px solid var(--border);
+    pointer-events: none;
   }
-  
+
   .sidebar.open {
     transform: translateX(0);
+    pointer-events: auto;
   }
   
   .sidebar-overlay {
@@ -1197,10 +1291,12 @@ textarea {
     transform: translateX(100%);
     transition: transform 0.3s ease;
     border-left: 1px solid var(--border);
+    pointer-events: none;
   }
-  
+
   .tools.open {
     transform: translateX(0);
+    pointer-events: auto;
   }
   
   .tools-overlay {

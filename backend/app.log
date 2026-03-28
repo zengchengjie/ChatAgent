@@ -7,8 +7,8 @@
 [INFO] >>> spring-boot-maven-plugin:3.3.5:run (default-cli) > test-compile @ chat-agent-backend >>>
 [INFO] 
 [INFO] --- maven-resources-plugin:3.3.1:resources (default-resources) @ chat-agent-backend ---
-[INFO] Copying 1 resource from src/main/resources to target/classes
-[INFO] Copying 7 resources from src/main/resources to target/classes
+[INFO] Copying 2 resources from src/main/resources to target/classes
+[INFO] Copying 12 resources from src/main/resources to target/classes
 [INFO] 
 [INFO] --- maven-compiler-plugin:3.13.0:compile (default-compile) @ chat-agent-backend ---
 [INFO] Nothing to compile - all classes are up to date.
@@ -34,53 +34,90 @@
 
  :: Spring Boot ::                (v3.3.5)
 
-2026-03-27 22:51:38,294 INFO  [main] traceId= com.chatagent.ChatAgentApplication - Starting ChatAgentApplication using Java 17 with PID 69920 (/Users/zengchengjie/IdeaProjects/ChatAgent/backend/target/classes started by zengchengjie in /Users/zengchengjie/IdeaProjects/ChatAgent/backend)
-2026-03-27 22:51:38,295 INFO  [main] traceId= com.chatagent.ChatAgentApplication - The following 1 profile is active: "dev"
-2026-03-27 22:51:38,825 INFO  [main] traceId= o.s.d.r.c.RepositoryConfigurationDelegate - Multiple Spring Data modules found, entering strict repository configuration mode
-2026-03-27 22:51:38,827 INFO  [main] traceId= o.s.d.r.c.RepositoryConfigurationDelegate - Bootstrapping Spring Data JPA repositories in DEFAULT mode.
-2026-03-27 22:51:38,905 INFO  [main] traceId= o.s.d.r.c.RepositoryConfigurationDelegate - Finished Spring Data repository scanning in 74 ms. Found 3 JPA repository interfaces.
-2026-03-27 22:51:39,314 INFO  [main] traceId= o.s.b.w.e.tomcat.TomcatWebServer - Tomcat initialized with port 8082 (http)
-2026-03-27 22:51:39,321 INFO  [main] traceId= o.a.catalina.core.StandardService - Starting service [Tomcat]
-2026-03-27 22:51:39,321 INFO  [main] traceId= o.a.catalina.core.StandardEngine - Starting Servlet engine: [Apache Tomcat/10.1.31]
-2026-03-27 22:51:39,350 INFO  [main] traceId= o.a.c.c.C.[Tomcat].[localhost].[/] - Initializing Spring embedded WebApplicationContext
-2026-03-27 22:51:39,350 INFO  [main] traceId= o.s.b.w.s.c.ServletWebServerApplicationContext - Root WebApplicationContext: initialization completed in 1038 ms
-2026-03-27 22:51:39,512 ERROR [main] traceId= i.n.r.d.DnsServerAddressStreamProviders - Unable to load io.netty.resolver.dns.macos.MacOSDnsServerAddressStreamProvider, fallback to system defaults. This may result in incorrect DNS resolutions on MacOS. Check whether you have a dependency on 'io.netty:netty-resolver-dns-native-macos'. Use DEBUG level to see the full stack: java.lang.UnsatisfiedLinkError: failed to load the required native library
-2026-03-27 22:51:39,868 INFO  [main] traceId= com.zaxxer.hikari.HikariDataSource - HikariPool-1 - Starting...
-2026-03-27 22:51:39,924 INFO  [main] traceId= com.zaxxer.hikari.pool.HikariPool - HikariPool-1 - Added connection org.sqlite.jdbc4.JDBC4Connection@b842275
-2026-03-27 22:51:39,925 INFO  [main] traceId= com.zaxxer.hikari.HikariDataSource - HikariPool-1 - Start completed.
-2026-03-27 22:51:39,934 INFO  [main] traceId= org.flywaydb.core.FlywayExecutor - Database: jdbc:sqlite:/Users/zengchengjie/IdeaProjects/ChatAgent/backend/data/chatagent.db (SQLite 3.45)
-2026-03-27 22:51:39,954 INFO  [main] traceId= o.f.core.internal.command.DbValidate - Successfully validated 5 migrations (execution time 00:00.012s)
-2026-03-27 22:51:39,957 INFO  [main] traceId= o.f.core.internal.command.DbMigrate - Current version of schema "main": 5
-2026-03-27 22:51:39,958 INFO  [main] traceId= o.f.core.internal.command.DbMigrate - Schema "main" is up to date. No migration necessary.
-2026-03-27 22:51:40,000 INFO  [main] traceId= o.h.jpa.internal.util.LogHelper - HHH000204: Processing PersistenceUnitInfo [name: default]
-2026-03-27 22:51:40,027 INFO  [main] traceId= org.hibernate.Version - HHH000412: Hibernate ORM core version 6.5.3.Final
-2026-03-27 22:51:40,041 INFO  [main] traceId= o.h.c.i.RegionFactoryInitiator - HHH000026: Second-level cache disabled
-2026-03-27 22:51:40,168 INFO  [main] traceId= o.s.o.j.p.SpringPersistenceUnitInfo - No LoadTimeWeaver setup: ignoring JPA class transformer
-2026-03-27 22:51:40,569 INFO  [main] traceId= o.h.e.t.j.p.i.JtaPlatformInitiator - HHH000489: No JTA platform available (set 'hibernate.transaction.jta.platform' to enable JTA platform integration)
-2026-03-27 22:51:40,580 INFO  [main] traceId= o.s.o.j.LocalContainerEntityManagerFactoryBean - Initialized JPA EntityManagerFactory for persistence unit 'default'
-2026-03-27 22:51:41,386 INFO  [main] traceId= o.s.s.c.a.a.c.InitializeUserDetailsBeanManagerConfigurer$InitializeUserDetailsManagerConfigurer - Global AuthenticationManager configured with UserDetailsService bean with name authUserDetailsService
-2026-03-27 22:51:41,638 INFO  [main] traceId= o.s.b.a.e.web.EndpointLinksResolver - Exposing 2 endpoints beneath base path '/actuator'
-2026-03-27 22:51:41,996 INFO  [main] traceId= o.s.b.w.e.tomcat.TomcatWebServer - Tomcat started on port 8082 (http) with context path '/'
-2026-03-27 22:51:42,006 INFO  [main] traceId= com.chatagent.ChatAgentApplication - Started ChatAgentApplication in 3.916 seconds (process running for 4.061)
-2026-03-27 22:51:42,098 INFO  [main] traceId= c.c.k.KnowledgeIngestionRunner - Knowledge ingestion skipped: knowledge_chunks already has 9 rows
-2026-03-27 22:51:49,278 INFO  [http-nio-8082-exec-1] traceId= o.a.c.c.C.[Tomcat].[localhost].[/] - Initializing Spring DispatcherServlet 'dispatcherServlet'
-2026-03-27 22:51:49,278 INFO  [http-nio-8082-exec-1] traceId= o.s.web.servlet.DispatcherServlet - Initializing Servlet 'dispatcherServlet'
-2026-03-27 22:51:49,281 INFO  [http-nio-8082-exec-1] traceId= o.s.web.servlet.DispatcherServlet - Completed initialization in 3 ms
-2026-03-27 22:51:49,329 INFO  [http-nio-8082-exec-1] traceId=f269c7de-cf6d-4b69-8266-cfe7f54a3ae5 c.c.o.RequestTraceLoggingFilter - event=request_start method=POST path=/api/agent/chat/stream
-2026-03-27 22:51:49,860 INFO  [http-nio-8082-exec-1] traceId=f269c7de-cf6d-4b69-8266-cfe7f54a3ae5 c.c.o.RequestTraceLoggingFilter - event=request_end method=POST path=/api/agent/chat/stream status=200 ms=532
-2026-03-27 22:51:51,662 INFO  [agent-1] traceId=122fc451-0ada-4b79-b658-c2b73eeb94dc c.c.a.engine.Langchain4jAgentEngine - event=agent_summary traceId=122fc451-0ada-4b79-b658-c2b73eeb94dc rounds=1 toolCalls=0 ragCalls=0 maxStepsHit=false
-2026-03-27 22:51:51,691 INFO  [http-nio-8082-exec-3] traceId=a2036795-5b83-4c4d-9623-27f013b4a84c c.c.o.RequestTraceLoggingFilter - event=request_start method=GET path=/api/sessions/35e12291-c300-4784-aaa8-07313e1ccdb9/messages
-2026-03-27 22:51:51,711 INFO  [http-nio-8082-exec-3] traceId=a2036795-5b83-4c4d-9623-27f013b4a84c c.c.o.RequestTraceLoggingFilter - event=request_end method=GET path=/api/sessions/35e12291-c300-4784-aaa8-07313e1ccdb9/messages status=200 ms=20
-2026-03-27 22:51:51,719 INFO  [http-nio-8082-exec-4] traceId=90f52424-2bf9-4370-88a1-df4bd0e5fa76 c.c.o.RequestTraceLoggingFilter - event=request_start method=GET path=/api/sessions
-2026-03-27 22:51:51,725 INFO  [http-nio-8082-exec-4] traceId=90f52424-2bf9-4370-88a1-df4bd0e5fa76 c.c.o.RequestTraceLoggingFilter - event=request_end method=GET path=/api/sessions status=200 ms=6
-2026-03-27 22:52:00,629 INFO  [http-nio-8082-exec-5] traceId=986770d7-5124-4d36-9c84-dc087e77881b c.c.o.RequestTraceLoggingFilter - event=request_start method=POST path=/api/agent/chat/stream
-2026-03-27 22:52:00,671 INFO  [http-nio-8082-exec-5] traceId=986770d7-5124-4d36-9c84-dc087e77881b c.c.o.RequestTraceLoggingFilter - event=request_end method=POST path=/api/agent/chat/stream status=200 ms=42
-2026-03-27 22:52:00,679 INFO  [agent-2] traceId=3c56b6d8-7d00-47fb-bbf5-39792cff9e3f c.c.a.engine.Langchain4jAgentEngine - event=tool_call traceId=3c56b6d8-7d00-47fb-bbf5-39792cff9e3f tool=get_mock_weather ms=4 ok=true
-2026-03-27 22:52:00,686 INFO  [agent-2] traceId=3c56b6d8-7d00-47fb-bbf5-39792cff9e3f c.c.a.engine.Langchain4jAgentEngine - event=tool_call traceId=3c56b6d8-7d00-47fb-bbf5-39792cff9e3f tool=get_mock_weather ms=0 ok=true
-2026-03-27 22:52:00,702 INFO  [agent-2] traceId=3c56b6d8-7d00-47fb-bbf5-39792cff9e3f c.c.a.engine.Langchain4jAgentEngine - event=tool_call traceId=3c56b6d8-7d00-47fb-bbf5-39792cff9e3f tool=calculator ms=10 ok=true
-2026-03-27 22:52:00,706 INFO  [agent-2] traceId=3c56b6d8-7d00-47fb-bbf5-39792cff9e3f c.c.a.engine.Langchain4jAgentEngine - event=deterministic_tool_fallback weatherCalls=2 calculatorCalls=1 cities=[北京, 上海] expression=1+1
-2026-03-27 22:52:03,431 INFO  [agent-2] traceId=3c56b6d8-7d00-47fb-bbf5-39792cff9e3f c.c.a.engine.Langchain4jAgentEngine - event=agent_summary traceId=3c56b6d8-7d00-47fb-bbf5-39792cff9e3f rounds=1 toolCalls=3 ragCalls=0 maxStepsHit=false
-2026-03-27 22:52:03,464 INFO  [http-nio-8082-exec-7] traceId=c37ba24a-40c8-40b0-852f-38fe166017a8 c.c.o.RequestTraceLoggingFilter - event=request_start method=GET path=/api/sessions/35e12291-c300-4784-aaa8-07313e1ccdb9/messages
-2026-03-27 22:52:03,474 INFO  [http-nio-8082-exec-7] traceId=c37ba24a-40c8-40b0-852f-38fe166017a8 c.c.o.RequestTraceLoggingFilter - event=request_end method=GET path=/api/sessions/35e12291-c300-4784-aaa8-07313e1ccdb9/messages status=200 ms=10
-2026-03-27 22:52:03,482 INFO  [http-nio-8082-exec-8] traceId=5bec8656-85f0-4f2c-af78-ef94970a03b9 c.c.o.RequestTraceLoggingFilter - event=request_start method=GET path=/api/sessions
-2026-03-27 22:52:03,488 INFO  [http-nio-8082-exec-8] traceId=5bec8656-85f0-4f2c-af78-ef94970a03b9 c.c.o.RequestTraceLoggingFilter - event=request_end method=GET path=/api/sessions status=200 ms=6
+2026-03-27 23:50:47,275 INFO  [main] traceId= com.chatagent.ChatAgentApplication - Starting ChatAgentApplication using Java 17 with PID 23109 (/Users/zengchengjie/IdeaProjects/ChatAgent/backend/target/classes started by zengchengjie in /Users/zengchengjie/IdeaProjects/ChatAgent/backend)
+2026-03-27 23:50:47,276 INFO  [main] traceId= com.chatagent.ChatAgentApplication - The following 1 profile is active: "dev"
+2026-03-27 23:50:47,754 INFO  [main] traceId= o.s.d.r.c.RepositoryConfigurationDelegate - Multiple Spring Data modules found, entering strict repository configuration mode
+2026-03-27 23:50:47,754 INFO  [main] traceId= o.s.d.r.c.RepositoryConfigurationDelegate - Bootstrapping Spring Data JPA repositories in DEFAULT mode.
+2026-03-27 23:50:47,822 INFO  [main] traceId= o.s.d.r.c.RepositoryConfigurationDelegate - Finished Spring Data repository scanning in 64 ms. Found 6 JPA repository interfaces.
+2026-03-27 23:50:48,185 INFO  [main] traceId= o.s.b.w.e.tomcat.TomcatWebServer - Tomcat initialized with port 8082 (http)
+2026-03-27 23:50:48,192 INFO  [main] traceId= o.a.catalina.core.StandardService - Starting service [Tomcat]
+2026-03-27 23:50:48,192 INFO  [main] traceId= o.a.catalina.core.StandardEngine - Starting Servlet engine: [Apache Tomcat/10.1.31]
+2026-03-27 23:50:48,227 INFO  [main] traceId= o.a.c.c.C.[Tomcat].[localhost].[/] - Initializing Spring embedded WebApplicationContext
+2026-03-27 23:50:48,228 INFO  [main] traceId= o.s.b.w.s.c.ServletWebServerApplicationContext - Root WebApplicationContext: initialization completed in 935 ms
+2026-03-27 23:50:48,439 ERROR [main] traceId= i.n.r.d.DnsServerAddressStreamProviders - Unable to load io.netty.resolver.dns.macos.MacOSDnsServerAddressStreamProvider, fallback to system defaults. This may result in incorrect DNS resolutions on MacOS. Check whether you have a dependency on 'io.netty:netty-resolver-dns-native-macos'. Use DEBUG level to see the full stack: java.lang.UnsatisfiedLinkError: failed to load the required native library
+2026-03-27 23:50:48,692 INFO  [main] traceId= com.zaxxer.hikari.HikariDataSource - HikariPool-1 - Starting...
+2026-03-27 23:50:48,746 INFO  [main] traceId= com.zaxxer.hikari.pool.HikariPool - HikariPool-1 - Added connection org.sqlite.jdbc4.JDBC4Connection@24f5e9e8
+2026-03-27 23:50:48,746 INFO  [main] traceId= com.zaxxer.hikari.HikariDataSource - HikariPool-1 - Start completed.
+2026-03-27 23:50:48,756 INFO  [main] traceId= org.flywaydb.core.FlywayExecutor - Database: jdbc:sqlite:/Users/zengchengjie/IdeaProjects/ChatAgent/backend/data/chatagent.db (SQLite 3.45)
+2026-03-27 23:50:48,776 INFO  [main] traceId= o.f.core.internal.command.DbValidate - Successfully validated 9 migrations (execution time 00:00.012s)
+2026-03-27 23:50:48,779 INFO  [main] traceId= o.f.core.internal.command.DbMigrate - Current version of schema "main": 9
+2026-03-27 23:50:48,780 INFO  [main] traceId= o.f.core.internal.command.DbMigrate - Schema "main" is up to date. No migration necessary.
+2026-03-27 23:50:48,818 INFO  [main] traceId= o.h.jpa.internal.util.LogHelper - HHH000204: Processing PersistenceUnitInfo [name: default]
+2026-03-27 23:50:48,839 INFO  [main] traceId= org.hibernate.Version - HHH000412: Hibernate ORM core version 6.5.3.Final
+2026-03-27 23:50:48,857 INFO  [main] traceId= o.h.c.i.RegionFactoryInitiator - HHH000026: Second-level cache disabled
+2026-03-27 23:50:48,970 INFO  [main] traceId= o.s.o.j.p.SpringPersistenceUnitInfo - No LoadTimeWeaver setup: ignoring JPA class transformer
+2026-03-27 23:50:49,393 INFO  [main] traceId= o.h.e.t.j.p.i.JtaPlatformInitiator - HHH000489: No JTA platform available (set 'hibernate.transaction.jta.platform' to enable JTA platform integration)
+2026-03-27 23:50:49,406 INFO  [main] traceId= o.s.o.j.LocalContainerEntityManagerFactoryBean - Initialized JPA EntityManagerFactory for persistence unit 'default'
+2026-03-27 23:50:49,866 INFO  [main] traceId= o.s.s.c.a.a.c.InitializeUserDetailsBeanManagerConfigurer$InitializeUserDetailsManagerConfigurer - Global AuthenticationManager configured with UserDetailsService bean with name authUserDetailsService
+2026-03-27 23:50:50,101 INFO  [main] traceId= o.s.b.a.e.web.EndpointLinksResolver - Exposing 2 endpoints beneath base path '/actuator'
+2026-03-27 23:50:50,442 INFO  [main] traceId= o.s.b.w.e.tomcat.TomcatWebServer - Tomcat started on port 8082 (http) with context path '/'
+2026-03-27 23:50:50,452 INFO  [main] traceId= com.chatagent.ChatAgentApplication - Started ChatAgentApplication in 3.347 seconds (process running for 3.491)
+2026-03-27 23:50:50,534 INFO  [main] traceId= c.c.k.KnowledgeIngestionRunner - Knowledge ingestion skipped: knowledge_chunks already has 22 rows
+2026-03-27 23:50:55,753 INFO  [http-nio-8082-exec-1] traceId= o.a.c.c.C.[Tomcat].[localhost].[/] - Initializing Spring DispatcherServlet 'dispatcherServlet'
+2026-03-27 23:50:55,753 INFO  [http-nio-8082-exec-1] traceId= o.s.web.servlet.DispatcherServlet - Initializing Servlet 'dispatcherServlet'
+2026-03-27 23:50:55,754 INFO  [http-nio-8082-exec-1] traceId= o.s.web.servlet.DispatcherServlet - Completed initialization in 1 ms
+2026-03-27 23:50:55,812 INFO  [http-nio-8082-exec-1] traceId=8aa12265f8d0d70c9be198ae4926b1f7 c.c.o.RequestTraceLoggingFilter - event=request_start method=GET path=/api/models
+2026-03-27 23:50:55,917 INFO  [http-nio-8082-exec-1] traceId=8aa12265f8d0d70c9be198ae4926b1f7 c.c.o.RequestTraceLoggingFilter - event=request_end method=GET path=/api/models status=200 ms=104
+2026-03-27 23:50:55,943 INFO  [http-nio-8082-exec-2] traceId=e190a6a4ff04950f2d4ab1d6bd1107bb c.c.o.RequestTraceLoggingFilter - event=request_start method=GET path=/api/sessions
+2026-03-27 23:50:55,994 INFO  [http-nio-8082-exec-2] traceId=e190a6a4ff04950f2d4ab1d6bd1107bb c.c.o.RequestTraceLoggingFilter - event=request_end method=GET path=/api/sessions status=200 ms=51
+2026-03-27 23:50:56,003 INFO  [http-nio-8082-exec-3] traceId=0b64cd955e7379e551d101dba5b273b2 c.c.o.RequestTraceLoggingFilter - event=request_start method=GET path=/api/sessions/35e12291-c300-4784-aaa8-07313e1ccdb9/messages
+2026-03-27 23:50:56,033 INFO  [http-nio-8082-exec-3] traceId=0b64cd955e7379e551d101dba5b273b2 c.c.o.RequestTraceLoggingFilter - event=request_end method=GET path=/api/sessions/35e12291-c300-4784-aaa8-07313e1ccdb9/messages status=200 ms=30
+2026-03-27 23:51:04,340 INFO  [http-nio-8082-exec-4] traceId=937040c61f9c1a490bb9ac0b430ce675 c.c.o.RequestTraceLoggingFilter - event=request_start method=POST path=/api/agent/chat/stream
+2026-03-27 23:51:04,633 INFO  [http-nio-8082-exec-4] traceId=937040c61f9c1a490bb9ac0b430ce675 c.c.o.RequestTraceLoggingFilter - event=request_end method=POST path=/api/agent/chat/stream status=200 ms=304
+2026-03-27 23:51:50,048 INFO  [agent-1] traceId=18d62241f222fb36df6669deb411256f c.c.a.engine.Langchain4jAgentEngine - event=tool_call traceId=unknown tool=get_mock_weather ms=0 ok=true
+2026-03-27 23:51:50,079 INFO  [agent-1] traceId=18d62241f222fb36df6669deb411256f c.c.a.engine.Langchain4jAgentEngine - event=tool_call traceId=unknown tool=get_mock_weather ms=4 ok=true
+2026-03-27 23:51:50,109 INFO  [agent-1] traceId=18d62241f222fb36df6669deb411256f c.c.a.engine.Langchain4jAgentEngine - event=tool_call traceId=unknown tool=calculator ms=12 ok=true
+2026-03-27 23:51:50,116 INFO  [agent-1] traceId=18d62241f222fb36df6669deb411256f c.c.a.engine.Langchain4jAgentEngine - event=deterministic_tool_fallback weatherCalls=2 calculatorCalls=1 cities=[北京, 上海] expression=1999*4324
+2026-03-27 23:51:53,290 INFO  [agent-1] traceId= c.c.a.engine.Langchain4jAgentEngine - event=agent_summary traceId=unknown rounds=1 toolCalls=3 ragCalls=0 maxStepsHit=false
+2026-03-27 23:51:53,317 INFO  [http-nio-8082-exec-6] traceId=0fab403dd54b7ae646507b234c07741d c.c.o.RequestTraceLoggingFilter - event=request_start method=GET path=/api/sessions/35e12291-c300-4784-aaa8-07313e1ccdb9/messages
+2026-03-27 23:51:53,333 INFO  [http-nio-8082-exec-6] traceId=0fab403dd54b7ae646507b234c07741d c.c.o.RequestTraceLoggingFilter - event=request_end method=GET path=/api/sessions/35e12291-c300-4784-aaa8-07313e1ccdb9/messages status=200 ms=16
+2026-03-27 23:51:53,339 INFO  [http-nio-8082-exec-7] traceId=370c37a1076cda22bde64875185dd82e c.c.o.RequestTraceLoggingFilter - event=request_start method=GET path=/api/sessions
+2026-03-27 23:51:53,343 INFO  [http-nio-8082-exec-7] traceId=370c37a1076cda22bde64875185dd82e c.c.o.RequestTraceLoggingFilter - event=request_end method=GET path=/api/sessions status=200 ms=4
+2026-03-28 13:54:26,476 INFO  [http-nio-8082-exec-8] traceId=31c6c58cabfa3ca39d9b5217c4fd95c3 c.c.o.RequestTraceLoggingFilter - event=request_start method=GET path=/api/models
+2026-03-28 13:54:26,551 INFO  [http-nio-8082-exec-8] traceId=31c6c58cabfa3ca39d9b5217c4fd95c3 c.c.o.RequestTraceLoggingFilter - event=request_end method=GET path=/api/models status=200 ms=76
+2026-03-28 13:54:26,561 INFO  [http-nio-8082-exec-9] traceId=652544b8b2a0b25ce1220c6bbc5c3229 c.c.o.RequestTraceLoggingFilter - event=request_start method=GET path=/api/sessions
+2026-03-28 13:54:26,629 INFO  [http-nio-8082-exec-9] traceId=652544b8b2a0b25ce1220c6bbc5c3229 c.c.o.RequestTraceLoggingFilter - event=request_end method=GET path=/api/sessions status=200 ms=68
+2026-03-28 13:54:26,637 INFO  [http-nio-8082-exec-10] traceId=4aef47cb9fcce7d62f35f6d214b28f19 c.c.o.RequestTraceLoggingFilter - event=request_start method=GET path=/api/sessions/35e12291-c300-4784-aaa8-07313e1ccdb9/messages
+2026-03-28 13:54:26,665 INFO  [http-nio-8082-exec-10] traceId=4aef47cb9fcce7d62f35f6d214b28f19 c.c.o.RequestTraceLoggingFilter - event=request_end method=GET path=/api/sessions/35e12291-c300-4784-aaa8-07313e1ccdb9/messages status=200 ms=28
+2026-03-28 13:54:28,269 INFO  [http-nio-8082-exec-1] traceId=33757c7620b1015d97ee5936157a7937 c.c.o.RequestTraceLoggingFilter - event=request_start method=GET path=/api/models
+2026-03-28 13:54:28,281 INFO  [http-nio-8082-exec-1] traceId=33757c7620b1015d97ee5936157a7937 c.c.o.RequestTraceLoggingFilter - event=request_end method=GET path=/api/models status=200 ms=12
+2026-03-28 13:54:28,291 INFO  [http-nio-8082-exec-2] traceId=03b1f69b7a876184b1b04b3492ca4839 c.c.o.RequestTraceLoggingFilter - event=request_start method=GET path=/api/sessions
+2026-03-28 13:54:28,301 INFO  [http-nio-8082-exec-2] traceId=03b1f69b7a876184b1b04b3492ca4839 c.c.o.RequestTraceLoggingFilter - event=request_end method=GET path=/api/sessions status=200 ms=10
+2026-03-28 13:54:28,307 INFO  [http-nio-8082-exec-3] traceId=5f43fb5517c26c596d3d8319edc6419e c.c.o.RequestTraceLoggingFilter - event=request_start method=GET path=/api/sessions/35e12291-c300-4784-aaa8-07313e1ccdb9/messages
+2026-03-28 13:54:28,316 INFO  [http-nio-8082-exec-3] traceId=5f43fb5517c26c596d3d8319edc6419e c.c.o.RequestTraceLoggingFilter - event=request_end method=GET path=/api/sessions/35e12291-c300-4784-aaa8-07313e1ccdb9/messages status=200 ms=9
+2026-03-28 13:54:29,245 INFO  [http-nio-8082-exec-4] traceId=0e41dd5ca9baefe50488bfc303d14822 c.c.o.RequestTraceLoggingFilter - event=request_start method=GET path=/api/models
+2026-03-28 13:54:29,255 INFO  [http-nio-8082-exec-4] traceId=0e41dd5ca9baefe50488bfc303d14822 c.c.o.RequestTraceLoggingFilter - event=request_end method=GET path=/api/models status=200 ms=10
+2026-03-28 13:54:29,261 INFO  [http-nio-8082-exec-5] traceId=d7f13ec8f03e8e2f8d5781e4e7da1e9e c.c.o.RequestTraceLoggingFilter - event=request_start method=GET path=/api/sessions
+2026-03-28 13:54:29,267 INFO  [http-nio-8082-exec-5] traceId=d7f13ec8f03e8e2f8d5781e4e7da1e9e c.c.o.RequestTraceLoggingFilter - event=request_end method=GET path=/api/sessions status=200 ms=6
+2026-03-28 13:54:29,272 INFO  [http-nio-8082-exec-6] traceId=3dfa63ba0a7d7f6d8751b4572c810d10 c.c.o.RequestTraceLoggingFilter - event=request_start method=GET path=/api/sessions/35e12291-c300-4784-aaa8-07313e1ccdb9/messages
+2026-03-28 13:54:29,282 INFO  [http-nio-8082-exec-6] traceId=3dfa63ba0a7d7f6d8751b4572c810d10 c.c.o.RequestTraceLoggingFilter - event=request_end method=GET path=/api/sessions/35e12291-c300-4784-aaa8-07313e1ccdb9/messages status=200 ms=10
+2026-03-28 13:56:33,048 INFO  [http-nio-8082-exec-7] traceId=e37a899b6356bb8e78bcf82cc52f3fe5 c.c.o.RequestTraceLoggingFilter - event=request_start method=GET path=/api/sessions/35e12291-c300-4784-aaa8-07313e1ccdb9/messages
+2026-03-28 13:56:33,088 INFO  [http-nio-8082-exec-7] traceId=e37a899b6356bb8e78bcf82cc52f3fe5 c.c.o.RequestTraceLoggingFilter - event=request_end method=GET path=/api/sessions/35e12291-c300-4784-aaa8-07313e1ccdb9/messages status=200 ms=40
+2026-03-28 13:57:11,029 INFO  [http-nio-8082-exec-8] traceId=1128f6673ba0f32ec6ed2672a20cb632 c.c.o.RequestTraceLoggingFilter - event=request_start method=GET path=/api/models
+2026-03-28 13:57:11,060 INFO  [http-nio-8082-exec-8] traceId=1128f6673ba0f32ec6ed2672a20cb632 c.c.o.RequestTraceLoggingFilter - event=request_end method=GET path=/api/models status=200 ms=31
+2026-03-28 13:57:11,139 INFO  [http-nio-8082-exec-9] traceId=d247bc7be44069b8448c4439d3d9334f c.c.o.RequestTraceLoggingFilter - event=request_start method=GET path=/api/sessions
+2026-03-28 13:57:11,160 INFO  [http-nio-8082-exec-9] traceId=d247bc7be44069b8448c4439d3d9334f c.c.o.RequestTraceLoggingFilter - event=request_end method=GET path=/api/sessions status=200 ms=21
+2026-03-28 13:57:11,167 INFO  [http-nio-8082-exec-10] traceId=ef4ca323b174feb949382c3278470f52 c.c.o.RequestTraceLoggingFilter - event=request_start method=GET path=/api/sessions/35e12291-c300-4784-aaa8-07313e1ccdb9/messages
+2026-03-28 13:57:11,193 INFO  [http-nio-8082-exec-10] traceId=ef4ca323b174feb949382c3278470f52 c.c.o.RequestTraceLoggingFilter - event=request_end method=GET path=/api/sessions/35e12291-c300-4784-aaa8-07313e1ccdb9/messages status=200 ms=26
+2026-03-28 13:57:11,370 INFO  [http-nio-8082-exec-1] traceId=f4c39ee4be9eb1a0221109719ccc10f4 c.c.o.RequestTraceLoggingFilter - event=request_start method=GET path=/api/models
+2026-03-28 13:57:11,381 INFO  [http-nio-8082-exec-1] traceId=f4c39ee4be9eb1a0221109719ccc10f4 c.c.o.RequestTraceLoggingFilter - event=request_end method=GET path=/api/models status=200 ms=11
+2026-03-28 13:57:11,390 INFO  [http-nio-8082-exec-2] traceId=1da5cff517d291f7e1846e1eb71eeb35 c.c.o.RequestTraceLoggingFilter - event=request_start method=GET path=/api/sessions
+2026-03-28 13:57:11,401 INFO  [http-nio-8082-exec-2] traceId=1da5cff517d291f7e1846e1eb71eeb35 c.c.o.RequestTraceLoggingFilter - event=request_end method=GET path=/api/sessions status=200 ms=11
+2026-03-28 13:57:11,468 INFO  [http-nio-8082-exec-3] traceId=55c50f5df8974022f01ecb94c1fb322a c.c.o.RequestTraceLoggingFilter - event=request_start method=GET path=/api/sessions/35e12291-c300-4784-aaa8-07313e1ccdb9/messages
+2026-03-28 13:57:11,493 INFO  [http-nio-8082-exec-3] traceId=55c50f5df8974022f01ecb94c1fb322a c.c.o.RequestTraceLoggingFilter - event=request_end method=GET path=/api/sessions/35e12291-c300-4784-aaa8-07313e1ccdb9/messages status=200 ms=25
+2026-03-28 13:58:09,932 INFO  [http-nio-8082-exec-4] traceId=6943d2cbf8d2c1e619cb09e5c37d7c67 c.c.o.RequestTraceLoggingFilter - event=request_start method=GET path=/api/models
+2026-03-28 13:58:09,947 INFO  [http-nio-8082-exec-4] traceId=6943d2cbf8d2c1e619cb09e5c37d7c67 c.c.o.RequestTraceLoggingFilter - event=request_end method=GET path=/api/models status=200 ms=16
+2026-03-28 13:58:09,953 INFO  [http-nio-8082-exec-5] traceId=95ce6f67ab1b3d7b348af8b18bb405c1 c.c.o.RequestTraceLoggingFilter - event=request_start method=GET path=/api/sessions
+2026-03-28 13:58:09,966 INFO  [http-nio-8082-exec-5] traceId=95ce6f67ab1b3d7b348af8b18bb405c1 c.c.o.RequestTraceLoggingFilter - event=request_end method=GET path=/api/sessions status=200 ms=13
+2026-03-28 13:58:09,973 INFO  [http-nio-8082-exec-6] traceId=0c255a8c0ecd1f2de3c61974edc692e5 c.c.o.RequestTraceLoggingFilter - event=request_start method=GET path=/api/sessions/35e12291-c300-4784-aaa8-07313e1ccdb9/messages
+2026-03-28 13:58:09,990 INFO  [http-nio-8082-exec-6] traceId=0c255a8c0ecd1f2de3c61974edc692e5 c.c.o.RequestTraceLoggingFilter - event=request_end method=GET path=/api/sessions/35e12291-c300-4784-aaa8-07313e1ccdb9/messages status=200 ms=17

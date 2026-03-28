@@ -117,6 +117,14 @@ public class DashScopeClient {
      * @param onDelta 每个 token 的回调函数
      */
     public void streamCompletion(ArrayNode messages, ArrayNode tools, java.util.function.Consumer<String> onDelta) {
+        streamCompletion(messages, tools, onDelta, () -> false);
+    }
+
+    public void streamCompletion(
+            ArrayNode messages,
+            ArrayNode tools,
+            java.util.function.Consumer<String> onDelta,
+            java.util.function.Supplier<Boolean> cancelled) {
         requireKey();
         ObjectNode body = baseBody(messages, tools, true);
         String payload;
@@ -146,6 +154,9 @@ public class DashScopeClient {
                     new BufferedReader(new InputStreamReader(resp.body(), StandardCharsets.UTF_8))) {
                 String line;
                 while ((line = br.readLine()) != null) {
+                    if (cancelled != null && Boolean.TRUE.equals(cancelled.get())) {
+                        break;
+                    }
                     if (line.isBlank()) {
                         continue;
                     }
@@ -221,6 +232,15 @@ public class DashScopeClient {
             ArrayNode tools,
             String modelOverride,
             java.util.function.Consumer<String> onDelta) {
+        streamCompletion(messages, tools, modelOverride, onDelta, () -> false);
+    }
+
+    public void streamCompletion(
+            ArrayNode messages,
+            ArrayNode tools,
+            String modelOverride,
+            java.util.function.Consumer<String> onDelta,
+            java.util.function.Supplier<Boolean> cancelled) {
         requireKey();
         ObjectNode body = baseBody(messages, tools, true);
         if (modelOverride != null && !modelOverride.isBlank()) {
@@ -253,6 +273,9 @@ public class DashScopeClient {
                     new BufferedReader(new InputStreamReader(resp.body(), StandardCharsets.UTF_8))) {
                 String line;
                 while ((line = br.readLine()) != null) {
+                    if (cancelled != null && Boolean.TRUE.equals(cancelled.get())) {
+                        break;
+                    }
                     if (line.isBlank()) {
                         continue;
                     }
@@ -316,12 +339,14 @@ public class DashScopeClient {
     private AssistantTurn parseAssistantTurn(String responseJson) throws Exception {
         JsonNode root = objectMapper.readTree(responseJson);
         JsonNode choices = root.get("choices");
+        TokenUsage usage = parseUsage(root);
         if (choices == null || !choices.isArray() || choices.isEmpty()) {
             return AssistantTurn.builder()
                     .content("")
                     .toolCalls(List.of())
                     .finishReason("stop")
                     .rawToolCallsJson(null)
+                    .usage(usage)
                     .build();
         }
         JsonNode choice0 = choices.get(0);
@@ -336,6 +361,7 @@ public class DashScopeClient {
                     .toolCalls(List.of())
                     .finishReason(finishReason)
                     .rawToolCallsJson(null)
+                    .usage(usage)
                     .build();
         }
         String content =
@@ -362,6 +388,27 @@ public class DashScopeClient {
                 .toolCalls(calls)
                 .finishReason(finishReason)
                 .rawToolCallsJson(rawTools)
+                .usage(usage)
+                .build();
+    }
+
+    private TokenUsage parseUsage(JsonNode root) {
+        JsonNode u = root.get("usage");
+        if (u == null || !u.isObject()) {
+            return null;
+        }
+        Integer prompt = u.has("prompt_tokens") && !u.get("prompt_tokens").isNull() ? u.get("prompt_tokens").asInt() : null;
+        Integer completion =
+                u.has("completion_tokens") && !u.get("completion_tokens").isNull() ? u.get("completion_tokens").asInt() : null;
+        Integer total = u.has("total_tokens") && !u.get("total_tokens").isNull() ? u.get("total_tokens").asInt() : null;
+        if (prompt == null && completion == null && total == null) {
+            return null;
+        }
+        return TokenUsage.builder()
+                .promptTokens(prompt)
+                .completionTokens(completion)
+                .totalTokens(total)
+                .estimated(false)
                 .build();
     }
 

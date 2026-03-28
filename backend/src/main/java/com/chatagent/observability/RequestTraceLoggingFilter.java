@@ -5,9 +5,9 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
-import java.util.UUID;
 import lombok.extern.slf4j.Slf4j;
-import org.slf4j.MDC;
+import io.micrometer.tracing.Span;
+import io.micrometer.tracing.Tracer;
 import org.springframework.lang.NonNull;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
@@ -23,20 +23,23 @@ public class RequestTraceLoggingFilter extends OncePerRequestFilter {
 
     public static final String TRACE_ID_HEADER = "X-Trace-Id";
 
+    private final Tracer tracer;
+
+    public RequestTraceLoggingFilter(Tracer tracer) {
+        this.tracer = tracer;
+    }
+
     @Override
     protected void doFilterInternal(
             @NonNull HttpServletRequest request,
             @NonNull HttpServletResponse response,
             @NonNull FilterChain filterChain)
             throws ServletException, IOException {
-        String existing = MDC.get("traceId");
-        boolean added = false;
-        if (existing == null || existing.isBlank()) {
-            MDC.put("traceId", UUID.randomUUID().toString());
-            added = true;
+        Span span = tracer.currentSpan();
+        String traceId = span != null ? span.context().traceId() : null;
+        if (traceId != null && !traceId.isBlank()) {
+            response.setHeader(TRACE_ID_HEADER, traceId);
         }
-        String traceId = MDC.get("traceId");
-        response.setHeader(TRACE_ID_HEADER, traceId);
 
         long t0 = System.currentTimeMillis();
         String method = request.getMethod();
@@ -50,9 +53,6 @@ public class RequestTraceLoggingFilter extends OncePerRequestFilter {
             long ms = System.currentTimeMillis() - t0;
             int status = response.getStatus();
             log.info("event=request_end method={} path={} status={} ms={}", method, path, status, ms);
-            if (added) {
-                MDC.remove("traceId");
-            }
         }
     }
 }

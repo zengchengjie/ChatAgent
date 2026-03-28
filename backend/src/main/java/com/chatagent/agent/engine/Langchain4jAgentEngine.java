@@ -7,8 +7,16 @@ import com.chatagent.chat.ChatService;
 import com.chatagent.chat.MessageRole;
 import com.chatagent.chat.dto.MessageResponse;
 import com.chatagent.common.ApiException;
+import com.chatagent.common.CancellationToken;
 import com.chatagent.config.AgentProperties;
 import com.chatagent.config.DashScopeProperties;
+import com.chatagent.memory.ChatSummary;
+import com.chatagent.memory.ChatSummaryRepository;
+import com.chatagent.memory.ChatSummaryService;
+import com.chatagent.memory.UserMemoryService;
+import com.chatagent.observability.run.AgentRun;
+import com.chatagent.observability.run.AgentRunService;
+import com.chatagent.observability.run.TokenEstimator;
 import com.chatagent.tools.ToolRegistry;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.langchain4j.agent.tool.Tool;
@@ -16,12 +24,13 @@ import dev.langchain4j.model.openai.OpenAiChatModel;
 import dev.langchain4j.model.openai.OpenAiStreamingChatModel;
 import dev.langchain4j.service.AiServices;
 import dev.langchain4j.service.TokenStream;
+import io.micrometer.tracing.Span;
+import io.micrometer.tracing.Tracer;
 import java.io.IOException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
@@ -36,7 +45,6 @@ import java.util.regex.Pattern;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import io.micrometer.core.instrument.MeterRegistry;
-import org.slf4j.MDC;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
@@ -67,6 +75,11 @@ public class Langchain4jAgentEngine implements AgentEngine {
     private final ToolRegistry toolRegistry;
     private final ObjectMapper objectMapper;
     private final MeterRegistry meterRegistry;
+    private final Tracer tracer;
+    private final AgentRunService agentRunService;
+    private final ChatSummaryService chatSummaryService;
+    private final ChatSummaryRepository chatSummaryRepository;
+    private final UserMemoryService userMemoryService;
 
     private final ExecutorService toolPool = Executors.newCachedThreadPool();
     private final ThreadLocal<ToolCallContext> toolContextLocal = new ThreadLocal<>();
@@ -78,23 +91,66 @@ public class Langchain4jAgentEngine implements AgentEngine {
 
     @Override
     public AgentChatResponse chatSync(Long userId, String sessionId, String userContent) {
-        String traceId = UUID.randomUUID().toString();
-        MDC.put("traceId", traceId);
+        String traceId = currentTraceId();
+        Span runSpan = tracer.nextSpan().name("agent.run").start();
+        String errorCode = null;
+        AgentRun run = null;
         ToolCallContext ctx = new ToolCallContext(userId, sessionId, traceId, null);
         ctx.audit.onRound();
         toolContextLocal.set(ctx);
         try {
+            try (Tracer.SpanInScope ignored = tracer.withSpan(runSpan)) {
             chatService.appendMessage(userId, sessionId, MessageRole.USER, userContent, null, null);
             String model = chatService.findSessionModel(userId, sessionId).orElse(null);
+            run = agentRunService.start(userId, sessionId, traceId, "langchain4j", model);
+            chatSummaryService.maybeSummarize(userId, sessionId, model);
             // Deterministic fallback: if tool calling doesn't happen, still execute obvious tools.
             maybeExecuteDeterministicToolsSafe(userContent);
-            String reply = assistant(model).chat(buildPromptWithHistory(userId, sessionId, userContent));
+            String prompt = buildPromptWithHistory(userId, sessionId, userContent);
+            String reply = assistant(model).chat(prompt);
             chatService.appendMessage(userId, sessionId, MessageRole.ASSISTANT, reply, null, null);
+            int promptTokens = TokenEstimator.estimateTokens(prompt);
+            int completionTokens = TokenEstimator.estimateTokens(reply);
+            meterRegistry.counter(
+                            "chatagent_llm_tokens_total",
+                            "model",
+                            model == null ? "" : model,
+                            "kind",
+                            "prompt",
+                            "estimated",
+                            "true")
+                    .increment(promptTokens);
+            meterRegistry.counter(
+                            "chatagent_llm_tokens_total",
+                            "model",
+                            model == null ? "" : model,
+                            "kind",
+                            "completion",
+                            "estimated",
+                            "true")
+                    .increment(completionTokens);
+            agentRunService.finish(
+                    run,
+                    promptTokens,
+                    completionTokens,
+                    promptTokens + completionTokens,
+                    true,
+                    1,
+                    null);
+            meterRegistry.counter("chatagent_llm_cost_total", "model", model == null ? "" : model, "currency", "USD")
+                    .increment(run.getCostUsd() == null ? 0.0 : run.getCostUsd());
 
             List<AgentStepResponse> steps = new ArrayList<>();
             steps.addAll(toPlanSteps(reply));
             steps.addAll(ctx.steps);
             return AgentChatResponse.builder().reply(reply).steps(steps).build();
+            }
+        } catch (ApiException e) {
+            errorCode = "API_EXCEPTION";
+            throw e;
+        } catch (Exception e) {
+            errorCode = "UNEXPECTED";
+            throw e;
         } finally {
             log.info(
                     "event=agent_summary traceId={} rounds={} toolCalls={} ragCalls={} maxStepsHit={}",
@@ -105,36 +161,82 @@ public class Langchain4jAgentEngine implements AgentEngine {
                     ctx.audit.maxStepsHit());
             meterRegistry.counter("chatagent.agent.summary", "engine", "langchain4j").increment();
             toolContextLocal.remove();
-            MDC.remove("traceId");
+            if (run != null && run.getEndedAt() == null) {
+                agentRunService.finish(run, null, null, null, true, 0, errorCode);
+            }
+            runSpan.end();
         }
     }
 
     @Override
-    public void chatStream(Long userId, String sessionId, String userContent, SseEmitter emitter) {
-        String traceId = UUID.randomUUID().toString();
-        MDC.put("traceId", traceId);
+    public void chatStream(Long userId, String sessionId, String userContent, SseEmitter emitter, CancellationToken cancelToken) {
+        String traceId = currentTraceId();
+        Span runSpan = tracer.nextSpan().name("agent.run").start();
+        String errorCode = null;
+        AgentRun run = null;
         ToolCallContext ctx = new ToolCallContext(userId, sessionId, traceId, emitter);
         ctx.audit.onRound();
         toolContextLocal.set(ctx);
         try {
+            try (Tracer.SpanInScope ignored = tracer.withSpan(runSpan)) {
             chatService.appendMessage(userId, sessionId, MessageRole.USER, userContent, null, null);
             String model = chatService.findSessionModel(userId, sessionId).orElse(null);
+            run = agentRunService.start(userId, sessionId, traceId, "langchain4j", model);
+            chatSummaryService.maybeSummarize(userId, sessionId, model);
             // Deterministic fallback: if tool calling doesn't happen, still execute obvious tools.
             maybeExecuteDeterministicToolsSafe(userContent);
+            if (cancelToken != null && cancelToken.isCancelled()) {
+                return;
+            }
             String reply;
             if (agentProperties.isLangchainTokenStreamingEnabled()) {
                 reply = streamWithLangchainModel(userId, sessionId, userContent, emitter, traceId, model);
             } else {
-                reply = assistant(model).chat(buildPromptWithHistory(userId, sessionId, userContent));
+                String prompt = buildPromptWithHistory(userId, sessionId, userContent);
+                reply = assistant(model).chat(prompt);
                 emitTextDeltas(emitter, reply);
             }
             chatService.appendMessage(userId, sessionId, MessageRole.ASSISTANT, reply, null, null);
+            String prompt = buildPromptWithHistory(userId, sessionId, userContent);
+            int promptTokens = TokenEstimator.estimateTokens(prompt);
+            int completionTokens = TokenEstimator.estimateTokens(reply);
+            meterRegistry.counter(
+                            "chatagent_llm_tokens_total",
+                            "model",
+                            model == null ? "" : model,
+                            "kind",
+                            "prompt",
+                            "estimated",
+                            "true")
+                    .increment(promptTokens);
+            meterRegistry.counter(
+                            "chatagent_llm_tokens_total",
+                            "model",
+                            model == null ? "" : model,
+                            "kind",
+                            "completion",
+                            "estimated",
+                            "true")
+                    .increment(completionTokens);
+            agentRunService.finish(
+                    run,
+                    promptTokens,
+                    completionTokens,
+                    promptTokens + completionTokens,
+                    true,
+                    1,
+                    null);
+            meterRegistry.counter("chatagent_llm_cost_total", "model", model == null ? "" : model, "currency", "USD")
+                    .increment(run.getCostUsd() == null ? 0.0 : run.getCostUsd());
 
             emitPlanEventsSafe(emitter, reply, traceId);
             sendJson(emitter, "done", Map.of("ok", true));
+            }
         } catch (ApiException e) {
+            errorCode = "API_EXCEPTION";
             sendJson(emitter, "error", Map.of("message", e.getMessage()));
         } catch (Exception e) {
+            errorCode = "UNEXPECTED";
             log.error("event=agent_stream_failed traceId={}", traceId, e);
             sendJson(emitter, "error", Map.of("message", "Internal error"));
         } finally {
@@ -147,9 +249,21 @@ public class Langchain4jAgentEngine implements AgentEngine {
                     ctx.audit.maxStepsHit());
             meterRegistry.counter("chatagent.agent.summary", "engine", "langchain4j").increment();
             toolContextLocal.remove();
-            MDC.remove("traceId");
+            if (run != null && run.getEndedAt() == null) {
+                agentRunService.finish(run, null, null, null, true, 0, errorCode);
+            }
+            runSpan.end();
             emitter.complete();
         }
+    }
+
+    private String currentTraceId() {
+        Span span = tracer.currentSpan();
+        if (span == null) {
+            return "unknown";
+        }
+        String traceId = span.context().traceId();
+        return traceId == null || traceId.isBlank() ? "unknown" : traceId;
     }
 
     private Assistant assistant(String modelOverride) {
@@ -234,10 +348,24 @@ public class Langchain4jAgentEngine implements AgentEngine {
 
     private String buildPromptWithHistory(Long userId, String sessionId, String userContent) {
         StringBuilder sb = new StringBuilder();
-        sb.append(SYSTEM_PROMPT).append("\n\nConversation history:\n");
+        sb.append(SYSTEM_PROMPT);
+        var prefs = userMemoryService.listAsMap(userId);
+        if (!prefs.isEmpty()) {
+            sb.append("\n\nUser preferences (long-term memory):\n");
+            prefs.forEach((k, v) -> sb.append("- ").append(k).append(": ").append(v).append("\n"));
+        }
+        ChatSummary summary = chatSummaryRepository.findById(sessionId).orElse(null);
+        long last = summary != null && summary.getLastMessageId() != null ? summary.getLastMessageId() : 0L;
+        if (summary != null && summary.getSummary() != null && !summary.getSummary().isBlank()) {
+            sb.append("\n\nConversation summary:\n").append(summary.getSummary()).append("\n");
+        }
+        sb.append("\nConversation history:\n");
         List<MessageResponse> rows = chatService.listMessages(userId, sessionId);
         for (MessageResponse r : rows) {
             if (r.getRole() == MessageRole.SYSTEM) {
+                continue;
+            }
+            if (last > 0 && r.getId() != null && r.getId() <= last) {
                 continue;
             }
             sb.append("- ").append(r.getRole().name()).append(": ").append(r.getContent() == null ? "" : r.getContent()).append("\n");

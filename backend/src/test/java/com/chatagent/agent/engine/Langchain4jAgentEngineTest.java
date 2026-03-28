@@ -10,6 +10,11 @@ import com.chatagent.config.DashScopeProperties;
 import com.chatagent.tools.ToolRegistry;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.tracing.Tracer;
+import com.chatagent.observability.run.AgentRunService;
+import com.chatagent.memory.ChatSummaryRepository;
+import com.chatagent.memory.ChatSummaryService;
+import com.chatagent.memory.UserMemoryService;
 import java.util.ArrayList;
 import java.util.List;
 import org.junit.jupiter.api.Test;
@@ -32,6 +37,16 @@ class Langchain4jAgentEngineTest {
 
     @Mock private MeterRegistry meterRegistry;
 
+    @Mock private Tracer tracer;
+
+    @Mock private AgentRunService agentRunService;
+
+    @Mock private ChatSummaryService chatSummaryService;
+
+    @Mock private ChatSummaryRepository chatSummaryRepository;
+
+    @Mock private UserMemoryService userMemoryService;
+
     @Test
     void testEngineName() {
         Langchain4jAgentEngine engine =
@@ -41,7 +56,12 @@ class Langchain4jAgentEngineTest {
                         agentProperties,
                         toolRegistry,
                         objectMapper,
-                        meterRegistry);
+                        meterRegistry,
+                        tracer,
+                        agentRunService,
+                        chatSummaryService,
+                        chatSummaryRepository,
+                        userMemoryService);
         assertEquals("langchain4j", engine.name());
     }
 }

@@ -3,6 +3,7 @@ package com.chatagent.agent.engine;
 import com.chatagent.agent.AgentService;
 import com.chatagent.agent.dto.AgentChatResponse;
 import com.chatagent.config.AppProperties;
+import com.chatagent.common.CancellationToken;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
@@ -20,7 +21,11 @@ public class AgentEngineRouter {
     }
 
     public void chatStream(Long userId, String sessionId, String userContent, SseEmitter emitter) {
-        pick().chatStream(userId, sessionId, userContent, emitter);
+        pick().chatStream(userId, sessionId, userContent, emitter, new CancellationToken());
+    }
+
+    public void chatStream(Long userId, String sessionId, String userContent, SseEmitter emitter, CancellationToken cancelToken) {
+        pick().chatStream(userId, sessionId, userContent, emitter, cancelToken);
     }
 
     private AgentEngine pick() {
@@ -38,8 +43,8 @@ public class AgentEngineRouter {
                 }
 
                 @Override
-                public void chatStream(Long userId, String sessionId, String userContent, SseEmitter emitter) {
-                    selfEngine.chatStream(userId, sessionId, userContent, emitter);
+                public void chatStream(Long userId, String sessionId, String userContent, SseEmitter emitter, CancellationToken cancelToken) {
+                    selfEngine.chatStream(userId, sessionId, userContent, emitter, cancelToken);
                 }
             };
         }

@@ -4,6 +4,7 @@ import com.chatagent.config.DashScopeProperties;
 import com.chatagent.llm.DashScopeEmbeddingClient;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.InputStream;
+import java.security.MessageDigest;
 import java.util.Arrays;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
@@ -76,7 +77,7 @@ public class KnowledgeIngestionRunner {
                 continue;
             }
 
-            long docId = requireOrCreateDoc(docTitle, sourcePath);
+            long docId = requireOrCreateDoc(docTitle, sourcePath, docText);
             List<KnowledgeChunker.ChunkDraft> chunks = chunker.chunkDoc(docTitle, docText);
             log.info("Ingest doc={} chunks={}", sourcePath, chunks.size());
 
@@ -100,19 +101,40 @@ public class KnowledgeIngestionRunner {
         log.info("Knowledge ingestion completed.");
     }
 
-    private long requireOrCreateDoc(String docTitle, String sourcePath) {
-        Long existingId =
-                findDocId(sourcePath);
+    private long requireOrCreateDoc(String docTitle, String sourcePath, String docText) {
+        Long existingId = findDocId(sourcePath);
         if (existingId != null) {
             return existingId;
         }
+        String hash = sha256Hex(docText);
         jdbcTemplate.update(
-                "INSERT INTO knowledge_docs(doc_title, source_path) VALUES (?,?)", docTitle, sourcePath);
+                "INSERT INTO knowledge_docs(doc_title, source_path, doc_text, doc_hash, version) VALUES (?,?,?,?,1)",
+                docTitle,
+                sourcePath,
+                docText,
+                hash);
         Long docId = jdbcTemplate.queryForObject("SELECT last_insert_rowid()", Long.class);
         if (docId == null) {
             throw new IllegalStateException("Failed to obtain knowledge_docs last_insert_rowid()");
         }
         return docId;
+    }
+
+    private static String sha256Hex(String text) {
+        if (text == null) {
+            return null;
+        }
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            byte[] digest = md.digest(text.getBytes(StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder(digest.length * 2);
+            for (byte b : digest) {
+                sb.append(String.format("%02x", b));
+            }
+            return sb.toString();
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     private Long findDocId(String sourcePath) {

@@ -4,11 +4,16 @@ import com.chatagent.agent.dto.AgentChatRequest;
 import com.chatagent.agent.dto.AgentChatResponse;
 import com.chatagent.agent.engine.AgentEngineRouter;
 import com.chatagent.chat.ChatService;
+import com.chatagent.common.CancellationToken;
+import com.chatagent.common.IdempotencyService;
 import com.chatagent.security.JwtPrincipal;
 import com.chatagent.security.SecurityUtils;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.validation.Valid;
+import java.time.Duration;
 import java.util.concurrent.Executor;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -58,6 +63,8 @@ public class AgentController {
     private final AgentEngineRouter agentEngineRouter;
     private final ChatService chatService;
     private final Executor agentTaskExecutor;
+    private final IdempotencyService idempotencyService;
+    private final ObjectMapper objectMapper;
 
     /**
      * 构造控制器。
@@ -69,10 +76,14 @@ public class AgentController {
     public AgentController(
             AgentEngineRouter agentEngineRouter,
             ChatService chatService,
-            @Qualifier("agentTaskExecutor") Executor agentTaskExecutor) {
+            @Qualifier("agentTaskExecutor") Executor agentTaskExecutor,
+            IdempotencyService idempotencyService,
+            ObjectMapper objectMapper) {
         this.agentEngineRouter = agentEngineRouter;
         this.chatService = chatService;
         this.agentTaskExecutor = agentTaskExecutor;
+        this.idempotencyService = idempotencyService;
+        this.objectMapper = objectMapper;
     }
 
     /**
@@ -91,10 +102,33 @@ public class AgentController {
      * @return 对话响应
      */
     @PostMapping("/chat")
-    public AgentChatResponse chat(@Valid @RequestBody AgentChatRequest req) {
+    public AgentChatResponse chat(
+            @Valid @RequestBody AgentChatRequest req,
+            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey) {
         JwtPrincipal p = SecurityUtils.requirePrincipal();
         chatService.requireSessionOwned(p.userId(), req.getSessionId());
-        return agentEngineRouter.chatSync(p.userId(), req.getSessionId(), req.getContent());
+        if (idempotencyKey == null || idempotencyKey.isBlank()) {
+            return agentEngineRouter.chatSync(p.userId(), req.getSessionId(), req.getContent());
+        }
+        String key = "idem:agent:chat:" + p.userId() + ":" + req.getSessionId() + ":" + idempotencyKey.trim();
+        var r = idempotencyService.tryAcquire(key, Duration.ofMinutes(10));
+        if (!r.acquired()) {
+            if (r.value() != null && !r.value().isBlank() && !"__processing__".equals(r.value())) {
+                try {
+                    return objectMapper.readValue(r.value(), AgentChatResponse.class);
+                } catch (Exception ignored) {
+                    // fall through
+                }
+            }
+            throw new com.chatagent.common.ApiException(org.springframework.http.HttpStatus.CONFLICT, "Duplicate request in progress");
+        }
+        AgentChatResponse resp = agentEngineRouter.chatSync(p.userId(), req.getSessionId(), req.getContent());
+        try {
+            idempotencyService.storeResult(key, objectMapper.writeValueAsString(resp), Duration.ofMinutes(10));
+        } catch (Exception ignored) {
+            // best effort
+        }
+        return resp;
     }
 
     /**
@@ -124,13 +158,37 @@ public class AgentController {
      * @return SseEmitter（300 秒超时）
      */
     @PostMapping("/chat/stream")
-    public SseEmitter chatStream(@Valid @RequestBody AgentChatRequest req) {
+    public SseEmitter chatStream(
+            @Valid @RequestBody AgentChatRequest req,
+            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey) {
         JwtPrincipal p = SecurityUtils.requirePrincipal();
         chatService.requireSessionOwned(p.userId(), req.getSessionId());
         SseEmitter emitter = new SseEmitter(300_000L);
+        CancellationToken cancelToken = new CancellationToken();
+        emitter.onCompletion(cancelToken::cancel);
+        emitter.onTimeout(cancelToken::cancel);
+        emitter.onError((e) -> cancelToken.cancel());
+
+        if (idempotencyKey != null && !idempotencyKey.isBlank()) {
+            String key = "idem:agent:stream:" + p.userId() + ":" + req.getSessionId() + ":" + idempotencyKey.trim();
+            var r = idempotencyService.tryAcquire(key, Duration.ofMinutes(10));
+            if (!r.acquired()) {
+                // For streaming we don't replay; just fail fast.
+                agentTaskExecutor.execute(
+                        () -> {
+                            try {
+                                emitter.send(SseEmitter.event().name("error").data("{\"message\":\"Duplicate request\"}"));
+                            } catch (Exception ignored) {
+                            } finally {
+                                emitter.complete();
+                            }
+                        });
+                return emitter;
+            }
+        }
         // 立即返回 emitter，具体推送在后台线程完成（长时间持有连接）
         agentTaskExecutor.execute(
-                () -> agentEngineRouter.chatStream(p.userId(), req.getSessionId(), req.getContent(), emitter));
+                () -> agentEngineRouter.chatStream(p.userId(), req.getSessionId(), req.getContent(), emitter, cancelToken));
         return emitter;
     }
 }

@@ -7,18 +7,28 @@ import com.chatagent.chat.ChatService;
 import com.chatagent.chat.MessageRole;
 import com.chatagent.chat.dto.MessageResponse;
 import com.chatagent.common.ApiException;
+import com.chatagent.common.CancellationToken;
 import com.chatagent.config.AgentProperties;
 import com.chatagent.llm.AssistantTurn;
 import com.chatagent.llm.DashScopeClient;
 import com.chatagent.llm.ToolCall;
+import com.chatagent.llm.TokenUsage;
+import com.chatagent.memory.ChatSummary;
+import com.chatagent.memory.ChatSummaryRepository;
+import com.chatagent.memory.ChatSummaryService;
+import com.chatagent.memory.UserMemoryService;
+import com.chatagent.observability.run.AgentRun;
+import com.chatagent.observability.run.AgentRunService;
+import com.chatagent.observability.run.TokenEstimator;
 import com.chatagent.tools.ToolRegistry;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
+import io.micrometer.tracing.Span;
+import io.micrometer.tracing.Tracer;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -31,7 +41,6 @@ import java.util.regex.Pattern;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import io.micrometer.core.instrument.MeterRegistry;
-import org.slf4j.MDC;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
@@ -64,6 +73,11 @@ public class AgentService {
     private final AgentProperties agentProperties;
     private final ObjectMapper objectMapper;
     private final MeterRegistry meterRegistry;
+    private final Tracer tracer;
+    private final AgentRunService agentRunService;
+    private final ChatSummaryService chatSummaryService;
+    private final ChatSummaryRepository chatSummaryRepository;
+    private final UserMemoryService userMemoryService;
     private final ExecutorService toolPool = Executors.newCachedThreadPool();
     private long lastToolCallTime = 0;
     private final Object toolLock = new Object();
@@ -98,13 +112,23 @@ public class AgentService {
      * @throws ApiException 当触发执行护栏（如 maxSteps、maxToolCallsTotal）时抛出
      */
     public AgentChatResponse chatSync(Long userId, String sessionId, String userContent) {
-        String traceId = UUID.randomUUID().toString();
-        MDC.put("traceId", traceId);
+        String traceId = currentTraceId();
         AgentRunAudit audit = new AgentRunAudit(traceId);
+        Span runSpan = tracer.nextSpan().name("agent.run").start();
+        String errorCode = null;
+        int llmCalls = 0;
+        int promptTokens = 0;
+        int completionTokens = 0;
+        int totalTokens = 0;
+        boolean tokensEstimated = false;
+        AgentRun run = null;
         try {
+            try (Tracer.SpanInScope ignored = tracer.withSpan(runSpan)) {
             // 1) 用户输入先持久化，保证后续 reload 能拼进上下文
             chatService.appendMessage(userId, sessionId, MessageRole.USER, userContent, null, null);
             String sessionModel = chatService.findSessionModel(userId, sessionId).orElse(null);
+            run = agentRunService.start(userId, sessionId, traceId, "self", sessionModel);
+            chatSummaryService.maybeSummarize(userId, sessionId, sessionModel);
             List<AgentStepResponse> steps = new ArrayList<>();
             boolean planRecorded = false;
             // 2) 每轮：以 DB 为单一事实来源重载 messages，避免内存与库不一致
@@ -114,13 +138,63 @@ public class AgentService {
                 ArrayNode tools = toolRegistry.toolsJson();
                 long t0 = System.currentTimeMillis();
                 // 3) 工具轮使用非流式 completion，便于解析 tool_calls
-                AssistantTurn turn = sessionModel != null
-                        ? dashScopeClient.chatCompletion(messages, tools, sessionModel)
-                        : dashScopeClient.chatCompletion(messages, tools);
+                AssistantTurn turn;
+                Span llmSpan = tracer.nextSpan().name("llm.call").start();
+                try (Tracer.SpanInScope s = tracer.withSpan(llmSpan)) {
+                    turn = sessionModel != null
+                            ? dashScopeClient.chatCompletion(messages, tools, sessionModel)
+                            : dashScopeClient.chatCompletion(messages, tools);
+                } finally {
+                    llmSpan.end();
+                }
+                llmCalls++;
+                TokenUsage usage = turn.getUsage();
+                int promptDelta = 0;
+                int completionDelta = 0;
+                int totalDelta = 0;
+                boolean estimatedThisCall = false;
+                if (usage != null && usage.getTotalTokens() != null) {
+                    promptDelta = usage.getPromptTokens() != null ? usage.getPromptTokens() : 0;
+                    completionDelta = usage.getCompletionTokens() != null ? usage.getCompletionTokens() : 0;
+                    totalDelta = usage.getTotalTokens();
+                } else {
+                    estimatedThisCall = true;
+                    promptDelta = TokenEstimator.estimateTokens(messages.toString());
+                    completionDelta = TokenEstimator.estimateTokens(turn.getContent());
+                    totalDelta = promptDelta + completionDelta;
+                }
+                if (estimatedThisCall) {
+                    tokensEstimated = true;
+                }
+                promptTokens += promptDelta;
+                completionTokens += completionDelta;
+                totalTokens += totalDelta;
+                String modelTag = sessionModel == null ? "" : sessionModel;
+                meterRegistry.counter(
+                                "chatagent_llm_tokens_total",
+                                "model",
+                                modelTag,
+                                "kind",
+                                "prompt",
+                                "estimated",
+                                Boolean.toString(estimatedThisCall))
+                        .increment(Math.max(0, promptDelta));
+                meterRegistry.counter(
+                                "chatagent_llm_tokens_total",
+                                "model",
+                                modelTag,
+                                "kind",
+                                "completion",
+                                "estimated",
+                                Boolean.toString(estimatedThisCall))
+                        .increment(Math.max(0, completionDelta));
+                long llmMs = System.currentTimeMillis() - t0;
+                meterRegistry.timer("chatagent_llm_latency", "model", sessionModel == null ? "" : sessionModel, "success", "true")
+                        .record(llmMs, TimeUnit.MILLISECONDS);
                 log.info(
                         "event=llm_call traceId={} ms={} finishReason={} toolCalls={}",
                         traceId,
-                        System.currentTimeMillis() - t0,
+                        llmMs,
                         turn.getFinishReason(),
                         turn.getToolCalls().size());
                 if (!planRecorded) {
@@ -175,7 +249,13 @@ public class AgentService {
                         long t1 = System.currentTimeMillis();
                         String result;
                         try {
-                            result = executeToolWithRetry(tc.getName(), tc.getArgumentsJson(), traceId, 1);
+                            Span toolSpan = tracer.nextSpan().name("tool.call").start();
+                            try (Tracer.SpanInScope s = tracer.withSpan(toolSpan)) {
+                                toolSpan.tag("tool.name", tc.getName());
+                                result = executeToolWithRetry(tc.getName(), tc.getArgumentsJson(), traceId, 1);
+                            } finally {
+                                toolSpan.end();
+                            }
                             log.info(
                                     "event=tool_call traceId={} tool={} ms={} ok=true",
                                     traceId,
@@ -226,6 +306,13 @@ public class AgentService {
             throw new ApiException(
                     HttpStatus.BAD_REQUEST,
                     "Agent stopped: maximum reasoning steps (" + agentProperties.getMaxSteps() + ") reached.");
+            }
+        } catch (ApiException e) {
+            errorCode = "API_EXCEPTION";
+            throw e;
+        } catch (Exception e) {
+            errorCode = "UNEXPECTED";
+            throw e;
         } finally {
             log.info(
                     "event=agent_summary traceId={} rounds={} toolCalls={} ragCalls={} maxStepsHit={}",
@@ -235,8 +322,30 @@ public class AgentService {
                     audit.ragCalls(),
                     audit.maxStepsHit());
             meterRegistry.counter("chatagent.agent.summary", "engine", "self").increment();
-            MDC.remove("traceId");
+            if (run != null) {
+                agentRunService.finish(
+                        run,
+                        promptTokens,
+                        completionTokens,
+                        totalTokens,
+                        tokensEstimated,
+                        llmCalls,
+                        errorCode);
+                String modelTag = run.getModel() == null ? "" : run.getModel();
+                meterRegistry.counter("chatagent_llm_cost_total", "model", modelTag, "currency", "USD")
+                        .increment(run.getCostUsd() == null ? 0.0 : run.getCostUsd());
+            }
+            runSpan.end();
         }
+    }
+
+    private String currentTraceId() {
+        Span span = tracer.currentSpan();
+        if (span == null) {
+            return "unknown";
+        }
+        String traceId = span.context().traceId();
+        return traceId == null || traceId.isBlank() ? "unknown" : traceId;
     }
 
     /**
@@ -282,22 +391,71 @@ public class AgentService {
      * @param userContent 用户输入内容
      * @param emitter SSE 发送器
      */
-    public void chatStream(Long userId, String sessionId, String userContent, SseEmitter emitter) {
-        String traceId = UUID.randomUUID().toString();
-        MDC.put("traceId", traceId);
+    public void chatStream(Long userId, String sessionId, String userContent, SseEmitter emitter, CancellationToken cancelToken) {
+        String traceId = currentTraceId();
         AgentRunAudit audit = new AgentRunAudit(traceId);
+        Span runSpan = tracer.nextSpan().name("agent.run").start();
+        String errorCode = null;
+        int llmCalls = 0;
+        int promptTokens = 0;
+        int completionTokens = 0;
+        int totalTokens = 0;
+        boolean tokensEstimated = false;
+        AgentRun run = null;
         try {
+            try (Tracer.SpanInScope ignored = tracer.withSpan(runSpan)) {
             chatService.appendMessage(userId, sessionId, MessageRole.USER, userContent, null, null);
             String sessionModel = chatService.findSessionModel(userId, sessionId).orElse(null);
+            run = agentRunService.start(userId, sessionId, traceId, "self", sessionModel);
+            chatSummaryService.maybeSummarize(userId, sessionId, sessionModel);
             boolean planSent = false;
             for (int step = 0; step < agentProperties.getMaxSteps(); step++) {
+                if (cancelToken != null && cancelToken.isCancelled()) {
+                    return;
+                }
                 audit.onRound();
                 ArrayNode messages = reloadMessages(userId, sessionId);
                 ArrayNode tools = toolRegistry.toolsJson();
                 long t0 = System.currentTimeMillis();
-                AssistantTurn turn = sessionModel != null
-                        ? dashScopeClient.chatCompletion(messages, tools, sessionModel)
-                        : dashScopeClient.chatCompletion(messages, tools);
+                AssistantTurn turn;
+                Span llmSpan = tracer.nextSpan().name("llm.call").start();
+                try (Tracer.SpanInScope s = tracer.withSpan(llmSpan)) {
+                    if (cancelToken != null && cancelToken.isCancelled()) {
+                        return;
+                    }
+                    turn = sessionModel != null
+                            ? dashScopeClient.chatCompletion(messages, tools, sessionModel)
+                            : dashScopeClient.chatCompletion(messages, tools);
+                } finally {
+                    llmSpan.end();
+                }
+                llmCalls++;
+                // Stream path: assume provider doesn't return usage; estimate from payload sizes.
+                int promptDelta = TokenEstimator.estimateTokens(messages.toString());
+                int completionDelta = TokenEstimator.estimateTokens(turn.getContent());
+                promptTokens += promptDelta;
+                completionTokens += completionDelta;
+                totalTokens += promptDelta + completionDelta;
+                tokensEstimated = true;
+                String modelTag = sessionModel == null ? "" : sessionModel;
+                meterRegistry.counter(
+                                "chatagent_llm_tokens_total",
+                                "model",
+                                modelTag,
+                                "kind",
+                                "prompt",
+                                "estimated",
+                                "true")
+                        .increment(Math.max(0, promptDelta));
+                meterRegistry.counter(
+                                "chatagent_llm_tokens_total",
+                                "model",
+                                modelTag,
+                                "kind",
+                                "completion",
+                                "estimated",
+                                "true")
+                        .increment(Math.max(0, completionDelta));
                 log.info(
                         "event=llm_call traceId={} ms={} finishReason={} toolCalls={}",
                         traceId,
@@ -338,6 +496,9 @@ public class AgentService {
                             ? turn.getToolCalls().subList(0, Math.max(0, perTurnLimit))
                             : turn.getToolCalls();
                     for (ToolCall tc : toRun) {
+                        if (cancelToken != null && cancelToken.isCancelled()) {
+                            return;
+                        }
                         if (audit.toolCalls() >= totalLimit) {
                             log.warn(
                                     "event=guardrail_hit traceId={} reason=maxToolCallsTotal limit={} actual={}",
@@ -375,7 +536,16 @@ public class AgentService {
                         long t1 = System.currentTimeMillis();
                         String result;
                         try {
-                            result = executeToolWithRetry(tc.getName(), tc.getArgumentsJson(), traceId, 1);
+                            Span toolSpan = tracer.nextSpan().name("tool.call").start();
+                            try (Tracer.SpanInScope s = tracer.withSpan(toolSpan)) {
+                                toolSpan.tag("tool.name", tc.getName());
+                                if (cancelToken != null && cancelToken.isCancelled()) {
+                                    return;
+                                }
+                                result = executeToolWithRetry(tc.getName(), tc.getArgumentsJson(), traceId, 1);
+                            } finally {
+                                toolSpan.end();
+                            }
                             log.info(
                                     "event=tool_call traceId={} tool={} ms={} ok=true",
                                     traceId,
@@ -435,23 +605,56 @@ public class AgentService {
                 // 最终回复：使用 DashScope 流式 API 实现真实 token 级流式
                 final StringBuilder fullText = new StringBuilder();
                 if (sessionModel != null) {
-                    dashScopeClient.streamCompletion(
-                            messages,
-                            tools,
-                            sessionModel,
-                            delta -> {
-                                fullText.append(delta);
-                                sendJson(emitter, "delta", Map.of("text", delta));
-                            });
+                    Span llmStreamSpan = tracer.nextSpan().name("llm.stream").start();
+                    try (Tracer.SpanInScope s = tracer.withSpan(llmStreamSpan)) {
+                        dashScopeClient.streamCompletion(
+                                messages,
+                                tools,
+                                sessionModel,
+                                delta -> {
+                                    if (cancelToken != null && cancelToken.isCancelled()) {
+                                        return;
+                                    }
+                                    fullText.append(delta);
+                                    sendJson(emitter, "delta", Map.of("text", delta));
+                                },
+                                cancelToken == null ? () -> false : cancelToken::isCancelled);
+                    } finally {
+                        llmStreamSpan.end();
+                    }
                 } else {
-                    dashScopeClient.streamCompletion(
-                            messages,
-                            tools,
-                            delta -> {
-                                fullText.append(delta);
-                                sendJson(emitter, "delta", Map.of("text", delta));
-                            });
+                    Span llmStreamSpan = tracer.nextSpan().name("llm.stream").start();
+                    try (Tracer.SpanInScope s = tracer.withSpan(llmStreamSpan)) {
+                        dashScopeClient.streamCompletion(
+                                messages,
+                                tools,
+                                delta -> {
+                                    if (cancelToken != null && cancelToken.isCancelled()) {
+                                        return;
+                                    }
+                                    fullText.append(delta);
+                                    sendJson(emitter, "delta", Map.of("text", delta));
+                                },
+                                cancelToken == null ? () -> false : cancelToken::isCancelled);
+                    } finally {
+                        llmStreamSpan.end();
+                    }
                 }
+                llmCalls++;
+                // Streaming completion usage is provider-dependent; estimate from emitted text.
+                int completionDelta2 = TokenEstimator.estimateTokens(fullText.toString());
+                completionTokens += completionDelta2;
+                totalTokens += completionDelta2;
+                String modelTag2 = sessionModel == null ? "" : sessionModel;
+                meterRegistry.counter(
+                                "chatagent_llm_tokens_total",
+                                "model",
+                                modelTag2,
+                                "kind",
+                                "completion",
+                                "estimated",
+                                "true")
+                        .increment(Math.max(0, completionDelta2));
                 chatService.appendMessage(userId, sessionId, MessageRole.ASSISTANT, fullText.toString(), null, null);
                 sendJson(emitter, "done", Map.of("ok", true));
                 return;
@@ -465,9 +668,12 @@ public class AgentService {
                             "Agent stopped: maximum reasoning steps ("
                                     + agentProperties.getMaxSteps()
                                     + ") reached."));
+            }
         } catch (ApiException e) {
+            errorCode = "API_EXCEPTION";
             sendJson(emitter, "error", Map.of("message", e.getMessage()));
         } catch (Exception e) {
+            errorCode = "UNEXPECTED";
             log.error("event=agent_stream_failed traceId={}", traceId, e);
             sendJson(emitter, "error", Map.of("message", "Internal error"));
         } finally {
@@ -479,7 +685,20 @@ public class AgentService {
                     audit.ragCalls(),
                     audit.maxStepsHit());
             meterRegistry.counter("chatagent.agent.summary", "engine", "self").increment();
-            MDC.remove("traceId");
+            if (run != null) {
+                agentRunService.finish(
+                        run,
+                        promptTokens,
+                        completionTokens,
+                        totalTokens,
+                        tokensEstimated,
+                        llmCalls,
+                        errorCode);
+                String modelTag = run.getModel() == null ? "" : run.getModel();
+                meterRegistry.counter("chatagent_llm_cost_total", "model", modelTag, "currency", "USD")
+                        .increment(run.getCostUsd() == null ? 0.0 : run.getCostUsd());
+            }
+            runSpan.end();
             emitter.complete();
         }
     }
@@ -496,7 +715,12 @@ public class AgentService {
      */
     private ArrayNode reloadMessages(Long userId, String sessionId) {
         List<MessageResponse> rows = chatService.listMessages(userId, sessionId);
-        return toLlmMessages(rows);
+        ChatSummary summary = chatSummaryRepository.findById(sessionId).orElse(null);
+        long last = summary != null && summary.getLastMessageId() != null ? summary.getLastMessageId() : 0L;
+        if (last > 0) {
+            rows = rows.stream().filter(r -> r.getId() != null && r.getId() > last).toList();
+        }
+        return toLlmMessages(userId, rows, summary);
     }
 
     /**
@@ -514,13 +738,22 @@ public class AgentService {
      * @param rows 数据库消息行列表
      * @return DashScope/OpenAI 兼容的 messages 数组
      */
-    private ArrayNode toLlmMessages(List<MessageResponse> rows) {
+    private ArrayNode toLlmMessages(Long userId, List<MessageResponse> rows, ChatSummary summary) {
         ArrayNode arr = objectMapper.createArrayNode();
-        arr.add(
-                objectMapper
-                        .createObjectNode()
-                        .put("role", "system")
-                        .put("content", SYSTEM_PROMPT));
+        StringBuilder sys = new StringBuilder(SYSTEM_PROMPT);
+        var prefs = userMemoryService.listAsMap(userId);
+        if (!prefs.isEmpty()) {
+            sys.append("\n\nUser preferences (long-term memory):\n");
+            prefs.forEach((k, v) -> sys.append("- ").append(k).append(": ").append(v).append("\n"));
+        }
+        arr.add(objectMapper.createObjectNode().put("role", "system").put("content", sys.toString()));
+        if (summary != null && summary.getSummary() != null && !summary.getSummary().isBlank()) {
+            arr.add(
+                    objectMapper
+                            .createObjectNode()
+                            .put("role", "system")
+                            .put("content", "Conversation summary:\n" + summary.getSummary()));
+        }
         for (MessageResponse r : rows) {
             switch (r.getRole()) {
                 case USER -> arr.add(
