@@ -121,3 +121,4 @@
 2026-03-28 13:58:09,966 INFO  [http-nio-8082-exec-5] traceId=95ce6f67ab1b3d7b348af8b18bb405c1 c.c.o.RequestTraceLoggingFilter - event=request_end method=GET path=/api/sessions status=200 ms=13
 2026-03-28 13:58:09,973 INFO  [http-nio-8082-exec-6] traceId=0c255a8c0ecd1f2de3c61974edc692e5 c.c.o.RequestTraceLoggingFilter - event=request_start method=GET path=/api/sessions/35e12291-c300-4784-aaa8-07313e1ccdb9/messages
 2026-03-28 13:58:09,990 INFO  [http-nio-8082-exec-6] traceId=0c255a8c0ecd1f2de3c61974edc692e5 c.c.o.RequestTraceLoggingFilter - event=request_end method=GET path=/api/sessions/35e12291-c300-4784-aaa8-07313e1ccdb9/messages status=200 ms=17
+2026-03-28 21:57:31,057 WARN  [HikariPool-1 housekeeper] traceId= com.zaxxer.hikari.pool.HikariPool - HikariPool-1 - Retrograde clock change detected (housekeeper delta=29s800ms), soft-evicting connections from pool.
