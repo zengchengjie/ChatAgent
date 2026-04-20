@@ -1,8 +1,6 @@
 package com.chatagent.config;
 
-import com.chatagent.security.AgentRateLimitFilter;
 import com.chatagent.security.JwtAuthenticationFilter;
-import com.chatagent.observability.RequestTraceLoggingFilter;
 import jakarta.servlet.DispatcherType;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
@@ -22,13 +20,12 @@ import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 
 /**
- * 安全配置：配置 Spring Security 的认证、授权和限流。
+ * 安全配置：配置 Spring Security 的认证、授权。
  * 
  * <p>
  * 配置内容：
  * <ul>
  *   <li>JWT 认证：通过 JwtAuthenticationFilter 解析和验证 JWT</li>
- *   <li>速率限制：通过 AgentRateLimitFilter 限制 Agent API 调用频率</li>
  *   <li>会话管理：使用 STATELESS 会话策略（无状态）</li>
  *   <li>权限控制：配置接口的访问权限</li>
  *   <li>异常处理：统一处理认证和授权异常</li>
@@ -40,7 +37,6 @@ import org.springframework.security.web.authentication.UsernamePasswordAuthentic
  *   <li>POST /api/auth/login：允许匿名访问（登录）</li>
  *   <li>GET /api/health：允许匿名访问（健康检查）</li>
  *   <li>/actuator/health：允许匿名访问（Actuator 健康检查）</li>
- *   <li>/actuator/prometheus：允许匿名访问（供 Prometheus 抓取）</li>
  *   <li>其他请求：需要认证</li>
  * </ul>
  * 
@@ -60,8 +56,6 @@ import org.springframework.security.web.authentication.UsernamePasswordAuthentic
 public class SecurityConfig {
 
     private final JwtAuthenticationFilter jwtAuthenticationFilter;
-    private final AgentRateLimitFilter agentRateLimitFilter;
-    private final RequestTraceLoggingFilter requestTraceLoggingFilter;
 
     /**
      * 配置安全过滤链。
@@ -83,9 +77,9 @@ public class SecurityConfig {
                                         .permitAll()
                                         .requestMatchers(HttpMethod.GET, "/api/health")
                                         .permitAll()
-                                        .requestMatchers("/actuator/health")
+                                        .requestMatchers(HttpMethod.POST, "/api/chat")
                                         .permitAll()
-                                        .requestMatchers("/actuator/prometheus")
+                                        .requestMatchers("/actuator/health")
                                         .permitAll()
                                         .anyRequest()
                                         .authenticated())
@@ -96,27 +90,31 @@ public class SecurityConfig {
                                                     if (response.isCommitted()) {
                                                         return;
                                                     }
-                                                    response.sendError(
-                                                            HttpServletResponse.SC_UNAUTHORIZED, "Unauthorized");
+                                                    response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+                                                    response.setContentType("application/json");
+                                                    response.getWriter()
+                                                            .write("{\"error\":\"Unauthorized\",\"message\":\"Authentication required\"}");
                                                 })
                                         .accessDeniedHandler(
                                                 (request, response, accessDeniedException) -> {
                                                     if (response.isCommitted()) {
                                                         return;
                                                     }
-                                                    response.sendError(
-                                                            HttpServletResponse.SC_FORBIDDEN, "Forbidden");
-                                                }))
-                .addFilterBefore(requestTraceLoggingFilter, UsernamePasswordAuthenticationFilter.class)
-                .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)
-                .addFilterAfter(agentRateLimitFilter, JwtAuthenticationFilter.class);
+                                                    response.setStatus(HttpServletResponse.SC_FORBIDDEN);
+                                                    response.setContentType("application/json");
+                                                    response.getWriter()
+                                                            .write("{\"error\":\"Forbidden\",\"message\":\"Access denied\"}");
+                                                }));
+
+        http.addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
+
         return http.build();
     }
 
     /**
      * 配置密码编码器。
      * 
-     * @return BCryptPasswordEncoder 密码编码器
+     * @return BCryptPasswordEncoder 实例
      */
     @Bean
     public PasswordEncoder passwordEncoder() {
@@ -127,12 +125,11 @@ public class SecurityConfig {
      * 配置认证管理器。
      * 
      * @param config 认证配置
-     * @return AuthenticationManager 认证管理器
+     * @return AuthenticationManager 实例
      * @throws Exception 配置异常
      */
     @Bean
-    public AuthenticationManager authenticationManager(AuthenticationConfiguration config)
-            throws Exception {
+    public AuthenticationManager authenticationManager(AuthenticationConfiguration config) throws Exception {
         return config.getAuthenticationManager();
     }
 }

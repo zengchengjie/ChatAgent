@@ -8,7 +8,8 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': {
-        target: 'http://127.0.0.1:8082',
+        // Use localhost to match browser loopback resolution (may be IPv6 ::1 on macOS)
+        target: 'http://localhost:8082',
         changeOrigin: true,
       },
     },

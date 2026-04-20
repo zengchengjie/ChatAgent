@@ -3,7 +3,6 @@ import { computed, nextTick, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { apiJson, ApiError } from '../api/http'
-import { consumeSse } from '../utils/sse'
 import { marked } from 'marked'
 
 interface SessionRow {
@@ -23,16 +22,6 @@ interface MessageRow {
   createdAt: string
 }
 
-interface TimelineEvent {
-  type: 'plan_start' | 'plan_step' | 'plan_done' | 'tool_start' | 'tool_end' | 'guardrail'
-  text: string
-  stepIndex?: number
-  toolName?: string
-  status?: 'pending' | 'running' | 'success' | 'error'
-  detail?: string
-  timestamp?: string
-}
-
 const router = useRouter()
 const auth = useAuthStore()
 
@@ -41,8 +30,6 @@ const activeId = ref<string | null>(null)
 const messages = ref<MessageRow[]>([])
 const input = ref('')
 const busy = ref(false)
-const streamPreview = ref('')
-const timelineEvents = ref<TimelineEvent[]>([])
 const banner = ref('')
 /** 桌面默认展开侧栏；窄屏默认收起，避免遮挡主内容 */
 function initialSidebarOpen(): boolean {
@@ -50,12 +37,6 @@ function initialSidebarOpen(): boolean {
   return window.innerWidth > 960
 }
 const sidebarOpen = ref(initialSidebarOpen())
-/** 与侧栏一致：桌面默认展开「过程」列；窄屏默认收起为抽屉 */
-function initialToolsOpen(): boolean {
-  if (typeof window === 'undefined') return true
-  return window.innerWidth > 960
-}
-const toolsOpen = ref(initialToolsOpen())
 const searchQuery = ref('')
 const editingSessionId = ref<string | null>(null)
 const editingTitle = ref('')
@@ -65,10 +46,6 @@ const allowedModels = ref<string[]>([])
 const selectedModel = ref<string>('qwen3.5-flash')
 
 const title = computed(() => sessions.value.find((s) => s.id === activeId.value)?.title ?? '对话')
-
-async function goKnowledgeAdmin() {
-  await router.push('/admin/knowledge')
-}
 
 const filteredSessions = computed(() => {
   if (!searchQuery.value.trim()) {
@@ -243,8 +220,6 @@ function toggleSessionMenu(id: string) {
 
 async function selectSession(id: string) {
   activeId.value = id
-  streamPreview.value = ''
-  timelineEvents.value = []
   const msgs = await apiJson<MessageRow[]>(`/api/sessions/${id}/messages`)
   messages.value = msgs
   stickToBottom.value = true
@@ -260,8 +235,6 @@ async function send() {
   banner.value = ''
   input.value = ''
   busy.value = true
-  streamPreview.value = ''
-  timelineEvents.value = []
   stickToBottom.value = true
   const optimistic: MessageRow = {
     id: -Date.now(),
@@ -275,14 +248,14 @@ async function send() {
   await scrollThreadToBottom()
 
   try {
-    const res = await fetch('/api/agent/chat/stream', {
+    const res = await fetch('/api/chat', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Accept: 'text/event-stream',
+        'X-Session-Id': sid,
         Authorization: `Bearer ${auth.token}`,
       },
-      body: JSON.stringify({ sessionId: sid, content: text }),
+      body: JSON.stringify({ message: text }),
     })
     if (res.status === 429) {
       banner.value = '请求过于频繁（429），请稍后再试。'
@@ -295,97 +268,22 @@ async function send() {
       await reloadThread(sid)
       return
     }
-    let acc = ''
-    await consumeSse(res, (ev, data) => {
-      if (ev === 'delta' && data && typeof data === 'object' && 'text' in data) {
-        const piece = String((data as { text?: string }).text ?? '')
-        acc += piece
-        streamPreview.value = acc
-        void followIfNeeded()
-      } else if (ev === 'plan_start' && data && typeof data === 'object') {
-        const count = Number((data as { count?: number }).count ?? 0)
-        timelineEvents.value = [
-          ...timelineEvents.value,
-          { 
-            type: 'plan_start', 
-            text: `计划已开始（共 ${count} 步）`,
-            timestamp: new Date().toISOString()
-          },
-        ]
-      } else if (ev === 'plan_step' && data && typeof data === 'object') {
-        const stepIndex = Number((data as { stepIndex?: number }).stepIndex ?? 0)
-        const text = String((data as { text?: string }).text ?? '')
-        timelineEvents.value = [
-          ...timelineEvents.value,
-          { 
-            type: 'plan_step', 
-            text: text,
-            stepIndex,
-            status: 'success',
-            timestamp: new Date().toISOString()
-          },
-        ]
-      } else if (ev === 'plan_done') {
-        timelineEvents.value = [...timelineEvents.value, { 
-          type: 'plan_done', 
-          text: '计划已完成',
-          status: 'success',
-          timestamp: new Date().toISOString()
-        }]
-      } else if (ev === 'tool_start' && data && typeof data === 'object') {
-        const name = String((data as { name?: string }).name ?? 'tool')
-        timelineEvents.value = [
-          ...timelineEvents.value,
-          { 
-            type: 'tool_start', 
-            text: `执行中：${name}`,
-            toolName: name,
-            status: 'running',
-            timestamp: new Date().toISOString()
-          },
-        ]
-      } else if (ev === 'tool_end' && data && typeof data === 'object') {
-        const name = String((data as { name?: string }).name ?? 'tool')
-        const ok = (data as { ok?: boolean }).ok ?? true
-        const detail = String((data as { detail?: string }).detail ?? '')
-        const eventIndex = timelineEvents.value.findIndex(
-          e => e.type === 'tool_start' && e.toolName === name && e.status === 'running'
-        )
-        if (eventIndex >= 0) {
-          const updatedEvents = [...timelineEvents.value]
-          updatedEvents[eventIndex] = {
-            ...updatedEvents[eventIndex],
-            type: 'tool_end',
-            text: `已完成：${name}`,
-            status: ok ? 'success' : 'error',
-            detail: detail,
-            timestamp: new Date().toISOString()
-          }
-          timelineEvents.value = updatedEvents
-        }
-      } else if (ev === 'guardrail' && data && typeof data === 'object') {
-        const reason = String((data as { reason?: string }).reason ?? 'unknown')
-        const limit = Number((data as { limit?: number }).limit ?? 0)
-        const actual = Number((data as { actual?: number }).actual ?? 0)
-        timelineEvents.value = [
-          ...timelineEvents.value,
-          {
-            type: 'guardrail',
-            text: `触发安全限制：${reason}（上限：${limit}，实际：${actual}）`,
-            status: 'error',
-            timestamp: new Date().toISOString()
-          }
-        ]
-      } else if (ev === 'error') {
-        const msg =
-          data && typeof data === 'object' && 'message' in data
-            ? String((data as { message?: string }).message)
-            : String(data)
-        banner.value = msg
-      }
-    })
-    streamPreview.value = ''
-    await reloadThread(sid)
+    const data = await res.json()
+    const answer = data.answer || ''
+    
+    // 模拟助手回复消息
+    messages.value = [
+      ...messages.value,
+      {
+        id: Date.now(),
+        role: 'ASSISTANT',
+        content: answer,
+        toolCallsJson: null,
+        toolCallId: null,
+        createdAt: new Date().toISOString(),
+      },
+    ]
+    await scrollThreadToBottom()
     await loadSessions()
   } catch (e) {
     if (e instanceof ApiError) {
@@ -434,24 +332,12 @@ function renderMarkdown(text: string): string {
   const html = marked.parse(text)
   return typeof html === 'string' ? html : ''
 }
-
-function formatTime(isoString: string): string {
-  const date = new Date(isoString)
-  const now = new Date()
-  const diffMs = now.getTime() - date.getTime()
-  const diffSecs = Math.floor(diffMs / 1000)
-  
-  if (diffSecs < 60) return `${diffSecs} 秒前`
-  if (diffSecs < 3600) return `${Math.floor(diffSecs / 60)} 分钟前`
-  if (diffSecs < 86400) return `${Math.floor(diffSecs / 3600)} 小时前`
-  return date.toLocaleDateString()
-}
 </script>
 
 <template>
   <div
     class="layout"
-    :class="{ 'sidebar-collapsed': !sidebarOpen, 'tools-collapsed': !toolsOpen }"
+    :class="{ 'sidebar-collapsed': !sidebarOpen }"
   >
     <div class="sidebar-overlay" :class="{ open: sidebarOpen }" @click="sidebarOpen = false"></div>
     <aside class="sidebar" :class="{ open: sidebarOpen }">
@@ -544,20 +430,6 @@ function formatTime(isoString: string): string {
           <h2>{{ title }}</h2>
         </div>
         <div class="header-right">
-          <button class="btn-secondary" type="button" @click="goKnowledgeAdmin">知识库管理</button>
-          <button
-            class="tools-btn"
-            type="button"
-            title="过程：计划与工具调用"
-            @click="toolsOpen = !toolsOpen"
-            aria-label="打开或关闭过程面板"
-            :aria-expanded="toolsOpen"
-          >
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <circle cx="12" cy="12" r="3"></circle>
-              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
-            </svg>
-          </button>
           <span v-if="banner" class="banner">{{ banner }}</span>
         </div>
       </header>
@@ -566,16 +438,12 @@ function formatTime(isoString: string): string {
           <div class="meta">{{ roleLabel(m.role) }}</div>
           <div class="bubble" v-html="renderMarkdown(m.content || '')"></div>
         </div>
-        <div v-if="streamPreview" class="bubble-row" data-role="assistant">
-          <div class="meta">助手</div>
-          <div class="bubble streaming" v-html="renderMarkdown(streamPreview)"></div>
-        </div>
       </div>
       <div class="composer">
         <textarea
           v-model="input"
           rows="3"
-          placeholder="输入消息…（试试“计算 123*456”或“上海天气”）"
+          placeholder="输入消息…（试试网络连不上、VPN 失败等 IT 问题）"
           @keydown.enter.exact.prevent="send"
         />
         <button type="button" class="send" :disabled="busy || !activeId" @click="send">
@@ -583,52 +451,6 @@ function formatTime(isoString: string): string {
         </button>
       </div>
     </main>
-    <div class="tools-overlay" :class="{ open: toolsOpen }" @click="toolsOpen = false"></div>
-    <aside class="tools" :class="{ open: toolsOpen }">
-      <div class="tools-header">
-        <h3>过程</h3>
-        <button class="close-btn" @click="toolsOpen = false" aria-label="Close tools">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <line x1="18" y1="6" x2="6" y2="18"></line>
-            <line x1="6" y1="6" x2="18" y2="18"></line>
-          </svg>
-        </button>
-      </div>
-      <p v-if="!timelineEvents.length" class="muted">回复时，这里会显示计划与工具调用步骤。</p>
-      <ul>
-        <li v-for="(t, i) in timelineEvents" :key="i" :class="`event-${t.type} status-${t.status || 'default'}`">
-          <div class="event-content">
-            <div class="event-header">
-              <span class="event-icon">
-                <svg v-if="t.type === 'plan_start'" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M9 11l3 3L22 4"></path>
-                  <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path>
-                </svg>
-                <svg v-else-if="t.type === 'plan_step'" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <circle cx="12" cy="12" r="10"></circle>
-                  <polyline points="12 6 12 12 16 14"></polyline>
-                </svg>
-                <svg v-else-if="t.type === 'plan_done'" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
-                  <polyline points="22 4 12 14.01 9 11.01"></polyline>
-                </svg>
-                <svg v-else-if="t.type === 'tool_start' || t.type === 'tool_end'" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>
-                </svg>
-                <svg v-else-if="t.type === 'guardrail'" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
-                  <line x1="12" y1="9" x2="12" y2="13"></line>
-                  <line x1="12" y1="17" x2="12.01" y2="17"></line>
-                </svg>
-              </span>
-              <span class="event-text">{{ t.text }}</span>
-            </div>
-            <div v-if="t.detail" class="event-detail">{{ t.detail }}</div>
-            <div v-if="t.timestamp" class="event-time">{{ formatTime(t.timestamp) }}</div>
-          </div>
-        </li>
-      </ul>
-    </aside>
   </div>
 </template>
 
@@ -890,7 +712,6 @@ function formatTime(isoString: string): string {
 }
 
 .menu-btn,
-.tools-btn,
 .close-btn {
   background: transparent;
   border: 1px solid var(--border);
@@ -921,21 +742,12 @@ function formatTime(isoString: string): string {
 }
 
 .menu-btn:hover,
-.tools-btn:hover,
 .close-btn:hover {
   background: rgba(99, 102, 241, 0.1);
   border-color: rgba(99, 102, 241, 0.3);
 }
 
-.tools-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 0.5rem;
-}
-
-.sidebar-overlay,
-.tools-overlay {
+.sidebar-overlay {
   display: none;
 }
 
@@ -945,8 +757,7 @@ function formatTime(isoString: string): string {
 }
 
 @media (max-width: 960px) {
-  .sidebar-overlay.open,
-  .tools-overlay.open {
+  .sidebar-overlay.open {
     display: block;
   }
 }
@@ -1068,146 +879,19 @@ textarea {
   opacity: 0.5;
   cursor: not-allowed;
 }
-.tools {
-  border-left: 1px solid var(--border);
-  padding: 1rem;
-  font-size: 0.8rem;
-  color: var(--muted);
-  background: var(--panel);
-  min-height: 0;
-  overflow: auto;
-}
-.tools h3 {
-  margin: 0 0 0.5rem;
-  font-size: 0.95rem;
-  color: var(--text);
-}
-.tools ul {
-  margin: 0;
-  padding-left: 0;
-  list-style: none;
-}
-
-.tools li {
-  margin: 0.5rem 0;
-  padding: 0.75rem;
-  border-radius: 8px;
-  background: rgba(0, 0, 0, 0.2);
-  border: 1px solid var(--border);
-  transition: all 0.2s ease;
-}
-
-.tools li:hover {
-  background: rgba(0, 0, 0, 0.3);
-}
-
-.event-content {
-  display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
-}
-
-.event-header {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-.event-icon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  flex-shrink: 0;
-}
-
-.event-text {
-  flex: 1;
-  font-size: 0.85rem;
-  line-height: 1.4;
-}
-
-.event-detail {
-  font-size: 0.75rem;
-  color: var(--muted);
-  padding: 0.4rem;
-  background: rgba(0, 0, 0, 0.15);
-  border-radius: 4px;
-  font-family: ui-monospace, monospace;
-  word-break: break-all;
-  max-height: 100px;
-  overflow-y: auto;
-}
-
-.event-time {
-  font-size: 0.7rem;
-  color: var(--muted);
-  text-align: right;
-}
-
-.tools li.event-plan_start,
-.tools li.event-plan_done {
-  border-left: 3px solid #c4b5fd;
-}
-
-.tools li.event-plan_step {
-  border-left: 3px solid #ddd6fe;
-  padding-left: 0.6rem;
-}
-
-.tools li.event-tool_start,
-.tools li.event-tool_end {
-  border-left: 3px solid #86efac;
-}
-
-.tools li.event-guardrail {
-  border-left: 3px solid #fca5a5;
-  background: rgba(239, 68, 68, 0.1);
-}
-
-.tools li.status-running {
-  animation: pulse 1.5s ease-in-out infinite;
-}
-
-.tools li.status-success {
-  border-left-color: #4ade80;
-}
-
-.tools li.status-error {
-  border-left-color: #f87171;
-  background: rgba(239, 68, 68, 0.1);
-}
-
-@keyframes pulse {
-  0%, 100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.6;
-  }
-}
 .muted {
   color: var(--muted);
 }
 @media (max-width: 1200px) {
   .layout {
-    grid-template-columns: 220px 1fr 180px;
+    grid-template-columns: 220px 1fr;
   }
 }
 
-/* 宽屏：汉堡收起左侧栏、齿轮收起右侧「过程」栏（窄屏仍用 transform 抽屉） */
+/* 宽屏：汉堡收起左侧栏 */
 @media (min-width: 961px) {
-  .layout.sidebar-collapsed:not(.tools-collapsed) {
-    grid-template-columns: 0 minmax(0, 1fr) 200px;
-  }
-
-  .layout.tools-collapsed:not(.sidebar-collapsed) {
-    grid-template-columns: 240px minmax(0, 1fr) 0;
-  }
-
-  .layout.sidebar-collapsed.tools-collapsed {
-    grid-template-columns: 0 minmax(0, 1fr) 0;
+  .layout.sidebar-collapsed {
+    grid-template-columns: 0 minmax(0, 1fr);
   }
 
   .layout.sidebar-collapsed .sidebar {
@@ -1219,25 +903,11 @@ textarea {
     opacity: 0;
     pointer-events: none;
   }
-
-  .layout.tools-collapsed .tools {
-    min-width: 0;
-    overflow: hidden;
-    padding-left: 0;
-    padding-right: 0;
-    border-left-color: transparent;
-    opacity: 0;
-    pointer-events: none;
-  }
 }
 
 @media (min-width: 961px) and (max-width: 1200px) {
-  .layout.sidebar-collapsed:not(.tools-collapsed) {
-    grid-template-columns: 0 minmax(0, 1fr) 180px;
-  }
-
-  .layout.tools-collapsed:not(.sidebar-collapsed) {
-    grid-template-columns: 220px minmax(0, 1fr) 0;
+  .layout.sidebar-collapsed {
+    grid-template-columns: 0 minmax(0, 1fr);
   }
 }
 
@@ -1281,36 +951,6 @@ textarea {
     width: 100%;
   }
   
-  .tools {
-    position: fixed;
-    right: 0;
-    top: 0;
-    bottom: 0;
-    width: 280px;
-    z-index: 100;
-    transform: translateX(100%);
-    transition: transform 0.3s ease;
-    border-left: 1px solid var(--border);
-    pointer-events: none;
-  }
-
-  .tools.open {
-    transform: translateX(0);
-    pointer-events: auto;
-  }
-  
-  .tools-overlay {
-    display: none;
-    position: fixed;
-    inset: 0;
-    background: rgba(0, 0, 0, 0.5);
-    z-index: 90;
-  }
-  
-  .tools-overlay.open {
-    display: block;
-  }
-  
   .top {
     padding: 1rem;
   }
@@ -1334,8 +974,7 @@ textarea {
 }
 
 @media (max-width: 640px) {
-  .sidebar,
-  .tools {
+  .sidebar {
     width: 100%;
   }
   

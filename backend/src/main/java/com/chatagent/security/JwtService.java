@@ -1,6 +1,5 @@
 package com.chatagent.security;
 
-import com.chatagent.config.AppProperties;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.ExpiredJwtException;
 import io.jsonwebtoken.Jwts;
@@ -11,22 +10,24 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import javax.crypto.SecretKey;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 @Service
 public class JwtService {
 
-    private final AppProperties appProperties;
+    @Value("${app.jwt.secret:default-secret-key-for-development-only-change-in-production}")
+    private String jwtSecret;
+
+    @Value("${app.jwt.expiration-ms:86400000}")
+    private long jwtExpirationMs;
+
     private final ConcurrentHashMap.KeySetView<String, Boolean> blacklistedJti =
             ConcurrentHashMap.newKeySet();
 
-    public JwtService(AppProperties appProperties) {
-        this.appProperties = appProperties;
-    }
-
     public String createToken(String username, Long userId, String role) {
         long now = System.currentTimeMillis();
-        long exp = now + appProperties.getJwt().getExpirationMs();
+        long exp = now + jwtExpirationMs;
         String jti = UUID.randomUUID().toString();
         return Jwts.builder()
                 .id(jti)
@@ -69,7 +70,7 @@ public class JwtService {
     }
 
     private SecretKey signingKey() {
-        byte[] keyBytes = appProperties.getJwt().getSecret().getBytes(StandardCharsets.UTF_8);
+        byte[] keyBytes = jwtSecret.getBytes(StandardCharsets.UTF_8);
         return Keys.hmacShaKeyFor(keyBytes);
     }
 }
