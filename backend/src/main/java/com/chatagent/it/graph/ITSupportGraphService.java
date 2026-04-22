@@ -1,6 +1,7 @@
 package com.chatagent.it.graph;
 
 import com.chatagent.it.SemanticCacheService;
+import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.Tracer;
 import io.opentelemetry.context.Scope;
 import java.util.ArrayList;
