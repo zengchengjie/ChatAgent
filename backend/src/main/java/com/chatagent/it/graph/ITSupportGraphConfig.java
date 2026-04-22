@@ -383,10 +383,13 @@ public class ITSupportGraphConfig {
                 String toolName = (String) state.value(CHANNEL_TOOL_NAME).orElse("");
 
                 String finalResponse;
-                // 工单等直接返回结果的工具，不走 LLM 整理
-                if (toolResult != null && toolResult.startsWith("工单已创建")) {
+                // 直接返回的工具结果，不走 LLM 加工
+                if ("saveMemory".equals(toolName)) {
+                    finalResponse = "记忆已保存";
+                } else if ("generateTicket".equals(toolName) && toolResult != null && toolResult.startsWith("工单已创建")) {
                     finalResponse = toolResult;
                 } else if (toolResult != null && !toolResult.isBlank()) {
+                    // RAG/诊断结果需要 LLM 整理
                     String prompt =
                             """
                             你是一个企业 IT 支持助手。用户提问了「%s」，以下是从知识库检索到的相关信息，请整理成简洁、口语化的回复，先给结论再说步骤，不要照搬原文格式。
