@@ -380,7 +380,15 @@ public class ITSupportGraphConfig {
 
                 String finalResponse;
                 if (toolResult != null && !toolResult.isBlank()) {
-                    finalResponse = toolResult;
+                    String prompt =
+                            """
+                            你是一个企业 IT 支持助手。用户提问了「%s」，以下是从知识库检索到的相关信息，请整理成简洁、口语化的回复，先给结论再说步骤，不要照搬原文格式。
+
+                            知识库内容：
+                            %s
+                            """.formatted(userMessage, toolResult);
+                    finalResponse =
+                            chatModel.generate(List.of(UserMessage.from(prompt))).content().text();
                 } else {
                     String prompt =
                             """
