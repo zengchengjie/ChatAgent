@@ -220,12 +220,18 @@ public class ITSupportGraphConfig {
                         用户消息：「%s」
 
                         选项：
-                        - diagnoseNetwork：网络问题（VPN、Wi-Fi、有线）
-                        - searchKnowledgeBase：IT 流程、内部经验
+                        - searchKnowledgeBase：IT 流程、内部经验（包括联系谁、内部流程、故障处理经验等）**优先使用**
+                        - diagnoseNetwork：网络问题（VPN、Wi-Fi、有线）**仅在能明确判断是纯网络配置问题时使用**
                         - generateTicket：创建工单
                         - saveMemory：保存用户记忆（格式：内容|type|标签列表）
                         - searchMemory：搜索用户记忆
                         - null（直接回复）：不需要工具
+
+                        决策规则：
+                        - 如果用户问题是公司IT相关（怎么联系IT、故障处理流程、内部经验）→ searchKnowledgeBase
+                        - 如果能明确判断是纯网络配置问题（VPN参数、Wi-Fi密码、有线设置）且不涉及公司IT流程 → diagnoseNetwork
+                        - 混合问题（公司IT+网络）→ searchKnowledgeBase
+                        - 不确定时 → searchKnowledgeBase
 
                         输出格式（仅 JSON，禁止其他文字）：
                         {"tool": "工具名或null", "input": "参数或null"}
