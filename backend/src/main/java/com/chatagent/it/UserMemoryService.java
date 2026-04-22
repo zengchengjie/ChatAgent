@@ -18,6 +18,7 @@ import java.util.List;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
@@ -33,6 +34,7 @@ public class UserMemoryService {
     private static final double DECAY_MIN_SCORE = 0.3;
 
     private final StringRedisTemplate redisTemplate;
+    @Qualifier("userMemoryEmbeddingStore")
     private final RedisEmbeddingStore embeddingStore;
     private final EmbeddingModel embeddingModel;
     private final ObjectMapper objectMapper;

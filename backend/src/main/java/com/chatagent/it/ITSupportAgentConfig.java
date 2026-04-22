@@ -8,6 +8,7 @@ import dev.langchain4j.store.embedding.redis.RedisEmbeddingStore;
 import dev.langchain4j.service.AiServices;
 import java.time.Duration;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Primary;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -28,12 +29,13 @@ public class ITSupportAgentConfig {
         return OpenAiEmbeddingModel.builder()
                 .apiKey(properties.getApiKey())
                 .baseUrl(properties.getBaseUrl())
-                .modelName("text-embedding-v3")
+                .modelName("text-embedding-v2")
                 .timeout(Duration.ofMillis(properties.getReadTimeoutMs()))
                 .build();
     }
 
     @Bean
+    @Primary
     RedisEmbeddingStore itSupportEmbeddingStore() {
         return RedisEmbeddingStore.builder()
                 .host(redisHost)

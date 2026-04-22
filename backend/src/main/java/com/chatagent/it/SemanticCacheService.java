@@ -1,6 +1,9 @@
 package com.chatagent.it;
 
 import dev.langchain4j.model.embedding.EmbeddingModel;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.Tracer;
+import io.opentelemetry.context.Scope;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -16,26 +19,40 @@ public class SemanticCacheService {
 
     private final EmbeddingModel embeddingModel;
     private final ITSupportProperties properties;
+    private final Tracer tracer;
 
     private final CopyOnWriteArrayList<CacheEntry> cache = new CopyOnWriteArrayList<>();
 
     public CacheHit findBestMatch(String question) {
-        double[] queryVector = embedding(question);
-        if (queryVector.length == 0 || cache.isEmpty()) {
-            return CacheHit.miss(queryVector);
-        }
+        Span span = tracer.spanBuilder("semantic_cache.find").startSpan();
+        try (Scope scope = span.makeCurrent()) {
+            span.setAttribute("question.length", question.length());
+            double[] queryVector = embedding(question);
+            if (queryVector.length == 0 || cache.isEmpty()) {
+                span.setAttribute("cache.hit", false);
+                span.setAttribute("cache.reason", "empty");
+                return CacheHit.miss(queryVector);
+            }
 
-        CacheEntry best = cache.stream()
-                .max(Comparator.comparingDouble(entry -> cosineSimilarity(queryVector, entry.vector())))
-                .orElse(null);
-        if (best == null) {
+            CacheEntry best = cache.stream()
+                    .max(Comparator.comparingDouble(entry -> cosineSimilarity(queryVector, entry.vector())))
+                    .orElse(null);
+            if (best == null) {
+                span.setAttribute("cache.hit", false);
+                return CacheHit.miss(queryVector);
+            }
+            double similarity = cosineSimilarity(queryVector, best.vector());
+            span.setAttribute("cache.similarity", similarity);
+            if (similarity >= properties.getSemanticCacheSimilarityThreshold()) {
+                span.setAttribute("cache.hit", true);
+                return CacheHit.hit(best.answer(), queryVector, similarity);
+            }
+            span.setAttribute("cache.hit", false);
+            span.setAttribute("cache.reason", "below_threshold");
             return CacheHit.miss(queryVector);
+        } finally {
+            span.end();
         }
-        double similarity = cosineSimilarity(queryVector, best.vector());
-        if (similarity >= properties.getSemanticCacheSimilarityThreshold()) {
-            return CacheHit.hit(best.answer(), queryVector, similarity);
-        }
-        return CacheHit.miss(queryVector);
     }
 
     public void put(String question, String answer, double[] vector) {

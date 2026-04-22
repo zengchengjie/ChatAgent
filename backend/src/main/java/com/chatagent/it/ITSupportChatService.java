@@ -1,5 +1,8 @@
 package com.chatagent.it;
 
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.Tracer;
+import io.opentelemetry.context.Scope;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -12,34 +15,48 @@ public class ITSupportChatService {
     private final ITSupportAgent agent;
     private final KnowledgeBaseRagService ragService;
     private final ITSupportTools tools;
+    private final Tracer tracer;
 
     public String chat(String sessionId, String message) {
-        String text = message == null ? "" : message.trim();
-        if (!text.isBlank() && shouldPreferKnowledgeBase(text)) {
-            String kb = ragService.search(text);
-            if (isKnowledgeHit(kb)) {
-                // Make the response deterministic: if KB hits, always answer from it.
-                String pretty = formatKnowledgeAnswer(kb);
-                return """
-                        结论：根据公司知识库，优先按如下方案处理。
+        Span span = tracer.spanBuilder("chat_service.chat").startSpan();
+        try (Scope scope = span.makeCurrent()) {
+            span.setAttribute("session.id", sessionId);
+            String text = message == null ? "" : message.trim();
+            span.setAttribute("message.length", text.length());
 
-                        步骤：
-                        %s
-                        """.formatted(pretty);
-            }
-            // KB miss -> use network diagnosis first for VPN/network issues
-            if (looksLikeNetworkIssue(text)) {
-                String diag = tools.diagnoseNetwork(text);
-                return """
-                        结论：知识库未命中该问题，建议先按网络诊断步骤排查。
+            if (!text.isBlank() && shouldPreferKnowledgeBase(text)) {
+                span.setAttribute("strategy", "knowledge_first");
+                String kb = ragService.search(text);
+                if (isKnowledgeHit(kb)) {
+                    span.setAttribute("kb.hit", true);
+                    // Make the response deterministic: if KB hits, always answer from it.
+                    String pretty = formatKnowledgeAnswer(kb);
+                    return """
+                            结论：根据公司知识库，优先按如下方案处理。
 
-                        步骤：
-                        %s
-                        """.formatted(diag.trim());
+                            步骤：
+                            %s
+                            """.formatted(pretty);
+                }
+                span.setAttribute("kb.hit", false);
+                // KB miss -> use network diagnosis first for VPN/network issues
+                if (looksLikeNetworkIssue(text)) {
+                    span.setAttribute("strategy", "network_diagnosis");
+                    String diag = tools.diagnoseNetwork(text);
+                    return """
+                            结论：知识库未命中该问题，建议先按网络诊断步骤排查。
+
+                            步骤：
+                            %s
+                            """.formatted(diag.trim());
+                }
             }
+
+            span.setAttribute("strategy", "agent");
+            return agent.chat(sessionId, text);
+        } finally {
+            span.end();
         }
-
-        return agent.chat(sessionId, text);
     }
 
     private static boolean shouldPreferKnowledgeBase(String text) {

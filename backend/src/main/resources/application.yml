@@ -33,6 +33,10 @@ management:
   endpoint:
     health:
       show-details: never
+  tracing:
+    sampling:
+      probability: 1.0
+    tracingEndpoint: http://111.229.177.132:4317
 
 app:
   jwt:
@@ -45,7 +49,7 @@ app:
     bootstrap-password: ${ADMIN_BOOTSTRAP_PASSWORD:admin}
 
 dashscope:
-  api-key: ${DASHSCOPE_API_KEY:}
+  api-key: ${DASHSCOPE_API_KEY:sk-36690807ab8f4a3f84bd816996e645c5}
   base-url: ${DASHSCOPE_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}
   model: ${DASHSCOPE_MODEL:qwen3.5-flash}
   allowed-models:
@@ -71,6 +75,7 @@ it-support:
   semantic-cache-similarity-threshold: ${IT_SUPPORT_CACHE_THRESHOLD:0.9}
   memory-enabled: ${IT_SUPPORT_MEMORY_ENABLED:true}
   memory-top-k: ${IT_SUPPORT_MEMORY_TOP_K:5}
+  knowledge-base-path: ${IT_SUPPORT_KB_PATH:/Users/zengchengjie/IdeaProjects/ChatAgent/docs/it-knowledge-base.md}
 
 logging:
   level:

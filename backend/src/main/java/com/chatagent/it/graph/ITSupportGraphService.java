@@ -2,6 +2,9 @@ package com.chatagent.it.graph;
 
 import dev.langchain4j.data.message.ChatMessage;
 import dev.langchain4j.data.message.UserMessage;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.Tracer;
+import io.opentelemetry.context.Scope;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -23,13 +26,19 @@ public class ITSupportGraphService {
 
     private final CompiledGraph<ITSupportGraphState> graph;
     private final BaseCheckpointSaver checkpointSaver;
+    private final Tracer tracer;
 
     /** 暂存 pending 上下文（sessionId → context） */
     private final ConcurrentHashMap<String, PendingContext> pendingContexts = new ConcurrentHashMap<>();
 
     /** 对话入口 */
     public GraphResult chat(String sessionId, String userId, String message) {
-        try {
+        Span span = tracer.spanBuilder("graph.chat").startSpan();
+        try (Scope scope = span.makeCurrent()) {
+            span.setAttribute("session.id", sessionId);
+            span.setAttribute("user.id", userId);
+            span.setAttribute("user.message", message);
+
             RunnableConfig config = RunnableConfig.builder()
                     .threadId(sessionId)
                     .build();
@@ -56,27 +65,36 @@ public class ITSupportGraphService {
             if (pendingAction != null && approved == null) {
                 // 中断：等待用户审批
                 pendingContexts.put(sessionId, new PendingContext(pendingAction, new ConcurrentHashMap<>(state.data())));
+                span.setAttribute("result.pending", true);
                 return GraphResult.pending(pendingAction);
             }
 
             String response = (String) state.value(ITSupportGraphConfig.CHANNEL_LLM_RESPONSE).orElse(null);
             pendingContexts.remove(sessionId);
+            span.setAttribute("result.pending", false);
             return GraphResult.ok(response != null ? response : "（无回复）");
 
         } catch (Exception e) {
+            span.recordException(e);
             log.error("Graph execution error sessionId={}", sessionId, e);
             return GraphResult.error("执行出错: " + e.getMessage());
+        } finally {
+            span.end();
         }
     }
 
     /** 用户审批 */
     public GraphResult approve(String sessionId, boolean approved) {
-        PendingContext ctx = pendingContexts.get(sessionId);
-        if (ctx == null) {
-            return GraphResult.error("没有待审批的操作");
-        }
+        Span span = tracer.spanBuilder("graph.approve").startSpan();
+        try (Scope scope = span.makeCurrent()) {
+            span.setAttribute("session.id", sessionId);
+            span.setAttribute("approved", approved);
 
-        try {
+            PendingContext ctx = pendingContexts.get(sessionId);
+            if (ctx == null) {
+                return GraphResult.error("没有待审批的操作");
+            }
+
             RunnableConfig config = RunnableConfig.builder()
                     .threadId(sessionId)
                     .build();
@@ -100,8 +118,11 @@ public class ITSupportGraphService {
             return GraphResult.ok(response != null ? response : "（无回复）");
 
         } catch (Exception e) {
+            span.recordException(e);
             log.error("Graph approval error sessionId={}", sessionId, e);
             return GraphResult.error("审批失败: " + e.getMessage());
+        } finally {
+            span.end();
         }
     }
 

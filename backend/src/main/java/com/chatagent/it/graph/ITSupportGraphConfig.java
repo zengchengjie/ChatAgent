@@ -9,6 +9,9 @@ import dev.langchain4j.data.message.ChatMessage;
 import dev.langchain4j.data.message.UserMessage;
 import dev.langchain4j.model.chat.ChatLanguageModel;
 import dev.langchain4j.model.openai.OpenAiChatModel;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.Tracer;
+import io.opentelemetry.context.Scope;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
@@ -51,6 +54,12 @@ public class ITSupportGraphConfig {
     public static final String CHANNEL_USER_ID = "userId";
     public static final String CHANNEL_SESSION_ID = "sessionId";
     public static final String CHANNEL_NEEDS_APPROVAL = "needsApproval";
+
+    private final Tracer tracer;
+
+    public ITSupportGraphConfig(Tracer tracer) {
+        this.tracer = tracer;
+    }
 
     /** Graph 专用的大模型，用于路由决策 */
     @Bean
@@ -175,60 +184,74 @@ public class ITSupportGraphConfig {
     private AsyncNodeAction<ITSupportGraphState> routerNode(
             ChatLanguageModel chatModel, ITSupportTools tools) {
         return state -> {
-            List<ChatMessage> messages = state.messages();
-            String userMessage =
-                    messages.isEmpty()
-                            ? ""
-                            : messages.get(messages.size() - 1) instanceof UserMessage u
-                                    ? u.text()
-                                    : "";
+            Span span = tracer.spanBuilder("router_node").startSpan();
+            try (Scope scope = span.makeCurrent()) {
+                List<ChatMessage> messages = state.messages();
+                String userMessage =
+                        messages.isEmpty()
+                                ? ""
+                                : messages.get(messages.size() - 1) instanceof UserMessage u
+                                        ? u.text()
+                                        : "";
 
-            String prompt =
-                    """
-                    判断用户意图，选择合适的工具。
-                    用户消息：「%s」
+                span.setAttribute("user.message", userMessage);
 
-                    选项：
-                    - diagnoseNetwork：网络问题（VPN、Wi-Fi、有线）
-                    - searchKnowledgeBase：IT 流程、内部经验
-                    - generateTicket：创建工单
-                    - saveMemory：保存用户记忆（格式：内容|type|标签列表）
-                    - searchMemory：搜索用户记忆
-                    - null（直接回复）：不需要工具
+                String prompt =
+                        """
+                        判断用户意图，选择合适的工具。
+                        用户消息：「%s」
 
-                    仅输出 JSON：{"tool": "工具名或null", "input": "参数或null"}
-                    """.formatted(userMessage);
+                        选项：
+                        - diagnoseNetwork：网络问题（VPN、Wi-Fi、有线）
+                        - searchKnowledgeBase：IT 流程、内部经验
+                        - generateTicket：创建工单
+                        - saveMemory：保存用户记忆（格式：内容|type|标签列表）
+                        - searchMemory：搜索用户记忆
+                        - null（直接回复）：不需要工具
 
-            String response =
-                    chatModel.generate(List.of(UserMessage.from(prompt))).content().text();
+                        仅输出 JSON：{"tool": "工具名或null", "input": "参数或null"}
+                        """.formatted(userMessage);
 
-            String toolName = extractJsonString(response, "tool");
-            String toolInput = extractJsonString(response, "input");
+                String response =
+                        chatModel.generate(List.of(UserMessage.from(prompt))).content().text();
 
-            if (toolName == null || toolName.isBlank() || toolName.equals("直接回复")) {
+                span.setAttribute("llm.response", response);
+
+                String toolName = extractJsonString(response, "tool");
+                String toolInput = extractJsonString(response, "input");
+
+                span.setAttribute("tool.name", toolName != null ? toolName : "null");
+
+                if (toolName == null || toolName.isBlank() || toolName.equals("直接回复")) {
+                    return CompletableFuture.completedFuture(
+                            Map.of(
+                                    CHANNEL_TOOL_NAME,
+                                    (Object) null,
+                                    CHANNEL_ROUTER_OUTPUT,
+                                    response,
+                                    CHANNEL_NEEDS_APPROVAL,
+                                    false));
+                }
+
+                // 需要审批的工具（如 saveMemory、generateTicket）
+                boolean needsApproval = "saveMemory".equals(toolName) || "generateTicket".equals(toolName);
+
                 return CompletableFuture.completedFuture(
                         Map.of(
                                 CHANNEL_TOOL_NAME,
-                                (Object) null,
+                                toolName,
+                                CHANNEL_TOOL_INPUT,
+                                toolInput != null ? toolInput : "",
                                 CHANNEL_ROUTER_OUTPUT,
                                 response,
                                 CHANNEL_NEEDS_APPROVAL,
-                                false));
+                                needsApproval));
+            } catch (Exception e) {
+                span.recordException(e);
+                throw e;
+            } finally {
+                span.end();
             }
-
-            // 需要审批的工具（如 saveMemory、generateTicket）
-            boolean needsApproval = "saveMemory".equals(toolName) || "generateTicket".equals(toolName);
-
-            return CompletableFuture.completedFuture(
-                    Map.of(
-                            CHANNEL_TOOL_NAME,
-                            toolName,
-                            CHANNEL_TOOL_INPUT,
-                            toolInput != null ? toolInput : "",
-                            CHANNEL_ROUTER_OUTPUT,
-                            response,
-                            CHANNEL_NEEDS_APPROVAL,
-                            needsApproval));
         };
     }
 
@@ -241,39 +264,49 @@ public class ITSupportGraphConfig {
                 return CompletableFuture.completedFuture(Map.of());
             }
 
-            String result;
-            try {
-                result =
-                        switch (toolName) {
-                            case "diagnoseNetwork" -> tools.diagnoseNetwork(toolInput);
-                            case "searchKnowledgeBase" -> tools.searchKnowledgeBase(toolInput);
-                            case "generateTicket" -> {
-                                String userId = (String) state.value(CHANNEL_USER_ID).orElse("unknown");
-                                yield tools.generateTicket(userId, toolInput);
-                            }
-                            case "saveMemory" -> {
-                                String sessionId =
-                                        (String) state.value(CHANNEL_SESSION_ID).orElse("default");
-                                String[] parts = toolInput.split("\\|");
-                                String content = parts.length > 0 ? parts[0] : "";
-                                String type = parts.length > 1 ? parts[1] : "fact";
-                                java.util.List<String> tags =
-                                        parts.length > 2 ? List.of(parts[2].split(",")) : List.of();
-                                tools.saveMemory(sessionId, content, type, tags);
-                                yield "记忆已保存";
-                            }
-                            case "searchMemory" -> {
-                                String sessionId =
-                                        (String) state.value(CHANNEL_SESSION_ID).orElse("default");
-                                yield tools.searchMemory(sessionId, toolInput);
-                            }
-                            default -> "未知工具: " + toolName;
-                        };
-            } catch (Exception e) {
-                result = "工具执行失败: " + e.getMessage();
-            }
+            Span span = tracer.spanBuilder("execute_tool." + toolName).startSpan();
+            try (Scope scope = span.makeCurrent()) {
+                span.setAttribute("tool.name", toolName);
+                span.setAttribute("tool.input", toolInput);
 
-            return CompletableFuture.completedFuture(Map.of(CHANNEL_LLM_RESPONSE, result));
+                String result;
+                try {
+                    result =
+                            switch (toolName) {
+                                case "diagnoseNetwork" -> tools.diagnoseNetwork(toolInput);
+                                case "searchKnowledgeBase" -> tools.searchKnowledgeBase(toolInput);
+                                case "generateTicket" -> {
+                                    String userId = (String) state.value(CHANNEL_USER_ID).orElse("unknown");
+                                    yield tools.generateTicket(userId, toolInput);
+                                }
+                                case "saveMemory" -> {
+                                    String sessionId =
+                                            (String) state.value(CHANNEL_SESSION_ID).orElse("default");
+                                    String[] parts = toolInput.split("\\|");
+                                    String content = parts.length > 0 ? parts[0] : "";
+                                    String type = parts.length > 1 ? parts[1] : "fact";
+                                    java.util.List<String> tags =
+                                            parts.length > 2 ? List.of(parts[2].split(",")) : List.of();
+                                    tools.saveMemory(sessionId, content, type, tags);
+                                    yield "记忆已保存";
+                                }
+                                case "searchMemory" -> {
+                                    String sessionId =
+                                            (String) state.value(CHANNEL_SESSION_ID).orElse("default");
+                                    yield tools.searchMemory(sessionId, toolInput);
+                                }
+                                default -> "未知工具: " + toolName;
+                            };
+                    span.setAttribute("tool.result", result);
+                } catch (Exception e) {
+                    span.recordException(e);
+                    result = "工具执行失败: " + e.getMessage();
+                }
+
+                return CompletableFuture.completedFuture(Map.of(CHANNEL_LLM_RESPONSE, result));
+            } finally {
+                span.end();
+            }
         };
     }
 
@@ -302,31 +335,37 @@ public class ITSupportGraphConfig {
 
     private AsyncNodeAction<ITSupportGraphState> respondNode(ChatLanguageModel chatModel) {
         return state -> {
-            String toolResult = (String) state.value(CHANNEL_LLM_RESPONSE).orElse("");
-            String toolName = (String) state.value(CHANNEL_TOOL_NAME).orElse(null);
-            List<ChatMessage> messages = state.messages();
-            String userMessage =
-                    messages.isEmpty()
-                            ? ""
-                            : messages.get(messages.size() - 1) instanceof UserMessage u
-                                    ? u.text()
-                                    : "";
+            Span span = tracer.spanBuilder("respond_node").startSpan();
+            try (Scope scope = span.makeCurrent()) {
+                String toolResult = (String) state.value(CHANNEL_LLM_RESPONSE).orElse("");
+                String toolName = (String) state.value(CHANNEL_TOOL_NAME).orElse(null);
+                List<ChatMessage> messages = state.messages();
+                String userMessage =
+                        messages.isEmpty()
+                                ? ""
+                                : messages.get(messages.size() - 1) instanceof UserMessage u
+                                        ? u.text()
+                                        : "";
 
-            String finalResponse;
-            if (toolResult != null && !toolResult.isBlank()) {
-                finalResponse = toolResult;
-            } else {
-                String prompt =
-                        """
-                        你是一个企业 IT 支持助手，回复简洁中文，先结论后步骤。
-                        用户消息：「%s」
-                        请直接回复。
-                        """.formatted(userMessage);
-                finalResponse =
-                        chatModel.generate(List.of(UserMessage.from(prompt))).content().text();
+                String finalResponse;
+                if (toolResult != null && !toolResult.isBlank()) {
+                    finalResponse = toolResult;
+                } else {
+                    String prompt =
+                            """
+                            你是一个企业 IT 支持助手，回复简洁中文，先结论后步骤。
+                            用户消息：「%s」
+                            请直接回复。
+                            """.formatted(userMessage);
+                    finalResponse =
+                            chatModel.generate(List.of(UserMessage.from(prompt))).content().text();
+                }
+
+                span.setAttribute("response.length", finalResponse.length());
+                return CompletableFuture.completedFuture(Map.of(CHANNEL_LLM_RESPONSE, finalResponse));
+            } finally {
+                span.end();
             }
-
-            return CompletableFuture.completedFuture(Map.of(CHANNEL_LLM_RESPONSE, finalResponse));
         };
     }
 

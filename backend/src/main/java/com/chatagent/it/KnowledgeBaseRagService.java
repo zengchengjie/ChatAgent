@@ -6,6 +6,9 @@ import dev.langchain4j.model.embedding.EmbeddingModel;
 import dev.langchain4j.store.embedding.redis.RedisEmbeddingStore;
 import dev.langchain4j.store.embedding.EmbeddingMatch;
 import dev.langchain4j.store.embedding.EmbeddingSearchRequest;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.Tracer;
+import io.opentelemetry.context.Scope;
 import jakarta.annotation.PostConstruct;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -15,6 +18,7 @@ import java.util.ArrayList;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 
@@ -24,8 +28,10 @@ import org.springframework.stereotype.Service;
 public class KnowledgeBaseRagService {
 
     private final EmbeddingModel embeddingModel;
+    @Qualifier("itSupportEmbeddingStore")
     private final RedisEmbeddingStore embeddingStore;
     private final ITSupportProperties properties;
+    private final Tracer tracer;
 
     private volatile boolean indexed = false;
 
@@ -56,31 +62,40 @@ public class KnowledgeBaseRagService {
     }
 
     public String search(String query) {
-        if (!indexed) {
-            // In dev, the embedding calls during @PostConstruct may be slow or fail due to config;
-            // try to (re)index lazily on first search.
-            loadAndIndex();
+        Span span = tracer.spanBuilder("rag.search").startSpan();
+        try (Scope scope = span.makeCurrent()) {
+            span.setAttribute("query", query);
             if (!indexed) {
-                return "知识库尚未初始化完成，请稍后重试。";
+                // In dev, the embedding calls during @PostConstruct may be slow or fail due to config;
+                // try to (re)index lazily on first search.
+                loadAndIndex();
+                if (!indexed) {
+                    span.setAttribute("indexed", false);
+                    return "知识库尚未初始化完成，请稍后重试。";
+                }
             }
-        }
+            span.setAttribute("indexed", true);
 
-        var queryEmbedding = embeddingModel.embed(query).content();
-        var searchRequest = EmbeddingSearchRequest.builder()
-                .queryEmbedding(queryEmbedding)
-                .maxResults(properties.getRagTopK())
-                .build();
+            var queryEmbedding = embeddingModel.embed(query).content();
+            var searchRequest = EmbeddingSearchRequest.builder()
+                    .queryEmbedding(queryEmbedding)
+                    .maxResults(properties.getRagTopK())
+                    .build();
 
-        List<EmbeddingMatch<TextSegment>> matches = embeddingStore.search(searchRequest).matches();
-        if (matches.isEmpty()) {
-            return "知识库中暂未检索到相关内容。";
-        }
+            List<EmbeddingMatch<TextSegment>> matches = embeddingStore.search(searchRequest).matches();
+            span.setAttribute("match_count", matches.size());
+            if (matches.isEmpty()) {
+                return "知识库中暂未检索到相关内容。";
+            }
 
-        StringBuilder result = new StringBuilder();
-        for (EmbeddingMatch<TextSegment> match : matches) {
-            result.append(match.embedded().text()).append("\n---\n");
+            StringBuilder result = new StringBuilder();
+            for (EmbeddingMatch<TextSegment> match : matches) {
+                result.append(match.embedded().text()).append("\n---\n");
+            }
+            return result.toString().trim();
+        } finally {
+            span.end();
         }
-        return result.toString().trim();
     }
 
     private List<String> splitMarkdown(String markdown) {
