@@ -219,7 +219,7 @@ public class ITSupportGraphConfig {
                         选项：
                         - searchKnowledgeBase：IT 流程、内部经验（包括联系谁、内部流程、故障处理经验等）**优先使用**
                         - diagnoseNetwork：网络问题（VPN、Wi-Fi、有线）**仅在能明确判断是纯网络配置问题时使用**
-                        - generateTicket：创建工单
+                        - generateTicket：创建工单，input 填用户问题摘要（必填）
                         - saveMemory：保存用户记忆（格式：内容|type|标签列表）
                         - searchMemory：搜索用户记忆
                         - null（直接回复）：不需要工具
@@ -271,6 +271,11 @@ public class ITSupportGraphConfig {
 
                 // 需要审批的工具（如 saveMemory、generateTicket）
                 boolean needsApproval = "saveMemory".equals(toolName) || "generateTicket".equals(toolName);
+
+                // toolInput 为空时：用用户消息作为默认值（工单需要摘要）
+                if ((toolInput == null || toolInput.isBlank()) && !userMessage.isBlank()) {
+                    toolInput = userMessage;
+                }
 
                 java.util.Map<String, Object> result = new java.util.HashMap<>();
                 result.put(CHANNEL_TOOL_NAME, toolName);
