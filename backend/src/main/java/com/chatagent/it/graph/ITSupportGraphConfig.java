@@ -248,7 +248,8 @@ public class ITSupportGraphConfig {
                     // 提取 JSON 部分（去除 LLM 可能附加的前后缀文字）
                     Matcher m = jsonPattern.matcher(response);
                     if (m.find()) {
-                        JsonNode node = objectMapper.readTree(m.group());
+                        String jsonStr = m.group();
+                        JsonNode node = objectMapper.readTree(jsonStr);
                         JsonNode toolNode = node.get("tool");
                         if (toolNode != null && !toolNode.isNull()) {
                             toolName = toolNode.asText();
@@ -260,6 +261,9 @@ public class ITSupportGraphConfig {
                     }
                 } catch (Exception e) {
                     span.recordException(e);
+                    // JSON 解析失败时不崩溃，将 toolName 置为空，走直接回复路径
+                    toolName = null;
+                    toolInput = null;
                 }
 
                 span.setAttribute("tool.name", toolName != null ? toolName : "null");
