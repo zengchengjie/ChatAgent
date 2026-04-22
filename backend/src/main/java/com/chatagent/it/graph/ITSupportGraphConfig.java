@@ -271,8 +271,8 @@ public class ITSupportGraphConfig {
                     return CompletableFuture.completedFuture(result);
                 }
 
-                // 需要审批的工具（如 saveMemory、generateTicket）
-                boolean needsApproval = "saveMemory".equals(toolName) || "generateTicket".equals(toolName);
+                // 需要审批的工具（仅工单需要审批，记忆自动保存）
+                boolean needsApproval = "generateTicket".equals(toolName);
 
                 // toolInput 为空时：用用户消息作为默认值（工单需要摘要）
                 if ((toolInput == null || toolInput.isBlank()) && !userMessage.isBlank()) {
