@@ -5,6 +5,8 @@ import static org.bsc.langgraph4j.StateGraph.START;
 
 import com.chatagent.config.DashScopeProperties;
 import com.chatagent.it.ITSupportTools;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.langchain4j.data.message.UserMessage;
 import dev.langchain4j.model.chat.ChatLanguageModel;
 import dev.langchain4j.model.openai.OpenAiChatModel;
@@ -13,6 +15,8 @@ import io.opentelemetry.api.trace.Tracer;
 import io.opentelemetry.context.Scope;
 import java.time.Duration;
 import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import org.bsc.langgraph4j.action.AsyncEdgeAction;
@@ -53,6 +57,8 @@ public class ITSupportGraphConfig {
     public static final String CHANNEL_NEEDS_APPROVAL = "needsApproval";
 
     private final Tracer tracer;
+    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final Pattern jsonPattern = Pattern.compile("\\{[\\s\\S]*\\}", Pattern.MULTILINE);
 
     public ITSupportGraphConfig(Tracer tracer) {
         this.tracer = tracer;
@@ -210,7 +216,7 @@ public class ITSupportGraphConfig {
 
                 String prompt =
                         """
-                        判断用户意图，选择合适的工具。
+                        判断用户意图，选择合适的工具。只输出纯 JSON，不要任何其他文字。
                         用户消息：「%s」
 
                         选项：
@@ -221,7 +227,8 @@ public class ITSupportGraphConfig {
                         - searchMemory：搜索用户记忆
                         - null（直接回复）：不需要工具
 
-                        仅输出 JSON：{"tool": "工具名或null", "input": "参数或null"}
+                        输出格式（仅 JSON，禁止其他文字）：
+                        {"tool": "工具名或null", "input": "参数或null"}
                         """.formatted(userMessage);
 
                 String response =
@@ -229,35 +236,45 @@ public class ITSupportGraphConfig {
 
                 span.setAttribute("llm.response.length", response.length());
 
-                String toolName = extractJsonString(response, "tool");
-                String toolInput = extractJsonString(response, "input");
+                String toolName = null;
+                String toolInput = null;
+                try {
+                    // 提取 JSON 部分（去除 LLM 可能附加的前后缀文字）
+                    Matcher m = jsonPattern.matcher(response);
+                    if (m.find()) {
+                        JsonNode node = objectMapper.readTree(m.group());
+                        JsonNode toolNode = node.get("tool");
+                        if (toolNode != null && !toolNode.isNull()) {
+                            toolName = toolNode.asText();
+                        }
+                        JsonNode inputNode = node.get("input");
+                        if (inputNode != null && !inputNode.isNull()) {
+                            toolInput = inputNode.asText();
+                        }
+                    }
+                } catch (Exception e) {
+                    span.recordException(e);
+                }
 
                 span.setAttribute("tool.name", toolName != null ? toolName : "null");
 
-                if (toolName == null || toolName.isBlank() || toolName.equals("直接回复")) {
-                    return CompletableFuture.completedFuture(
-                            Map.of(
-                                    CHANNEL_TOOL_NAME,
-                                    (Object) null,
-                                    CHANNEL_ROUTER_OUTPUT,
-                                    response,
-                                    CHANNEL_NEEDS_APPROVAL,
-                                    false));
+                if (toolName == null || toolName.isBlank() || "直接回复".equals(toolName)) {
+                    java.util.Map<String, Object> result = new java.util.HashMap<>();
+                    result.put(CHANNEL_TOOL_NAME, "");
+                    result.put(CHANNEL_ROUTER_OUTPUT, response);
+                    result.put(CHANNEL_NEEDS_APPROVAL, false);
+                    return CompletableFuture.completedFuture(result);
                 }
 
                 // 需要审批的工具（如 saveMemory、generateTicket）
                 boolean needsApproval = "saveMemory".equals(toolName) || "generateTicket".equals(toolName);
 
-                return CompletableFuture.completedFuture(
-                        Map.of(
-                                CHANNEL_TOOL_NAME,
-                                toolName,
-                                CHANNEL_TOOL_INPUT,
-                                toolInput != null ? toolInput : "",
-                                CHANNEL_ROUTER_OUTPUT,
-                                response,
-                                CHANNEL_NEEDS_APPROVAL,
-                                needsApproval));
+                java.util.Map<String, Object> result = new java.util.HashMap<>();
+                result.put(CHANNEL_TOOL_NAME, toolName);
+                result.put(CHANNEL_TOOL_INPUT, toolInput != null ? toolInput : "");
+                result.put(CHANNEL_ROUTER_OUTPUT, response);
+                result.put(CHANNEL_NEEDS_APPROVAL, needsApproval);
+                return CompletableFuture.completedFuture(result);
             } catch (Exception e) {
                 span.recordException(e);
                 throw e;
@@ -375,19 +392,6 @@ public class ITSupportGraphConfig {
                 span.end();
             }
         };
-    }
-
-    private static String extractJsonString(String json, String key) {
-        try {
-            int keyIdx = json.indexOf("\"" + key + "\"");
-            if (keyIdx < 0) return null;
-            int colonIdx = json.indexOf(':', keyIdx);
-            int startQuote = json.indexOf('"', colonIdx + 1);
-            int endQuote = json.indexOf('"', startQuote + 1);
-            return json.substring(startQuote + 1, endQuote);
-        } catch (Exception e) {
-            return null;
-        }
     }
 
     public static final class Nodes {
