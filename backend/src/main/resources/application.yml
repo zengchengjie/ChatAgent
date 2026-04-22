@@ -36,7 +36,9 @@ management:
   tracing:
     sampling:
       probability: 0.1
-    tracingEndpoint: http://111.229.177.132:4318/v1/traces
+  otlp:
+    tracing:
+      endpoint: http://111.229.177.132:4318
 
 app:
   jwt:
