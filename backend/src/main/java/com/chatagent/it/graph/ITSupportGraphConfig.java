@@ -220,13 +220,15 @@ public class ITSupportGraphConfig {
                         - searchKnowledgeBase：IT 流程、内部经验（包括联系谁、内部流程、故障处理经验等）**优先使用**
                         - diagnoseNetwork：网络问题（VPN、Wi-Fi、有线）**仅在能明确判断是纯网络配置问题时使用**
                         - generateTicket：创建工单，input 填用户问题摘要（必填）
-                        - saveMemory：保存用户记忆（格式：内容|type|标签列表）
-                        - searchMemory：搜索用户记忆
+                        - saveMemory：保存用户记忆，当用户提到自己的设备、品牌、习惯、系统、语言等个人信息时必须调用。格式：内容|type|标签，用 | 分隔。例如：「我用 MacBook」→ "我用MacBook|preference|Mac,设备"
+                        - searchMemory：搜索用户记忆，当用户问「我记得」「之前说过」「我的xxx」时调用
                         - null（直接回复）：不需要工具
 
                         决策规则：
                         - 如果用户问题是公司IT相关（怎么联系IT、故障处理流程、内部经验）→ searchKnowledgeBase
                         - 如果能明确判断是纯网络配置问题（VPN参数、Wi-Fi密码、有线设置）且不涉及公司IT流程 → diagnoseNetwork
+                        - 如果用户提到自己的设备/品牌/习惯/系统等个人信息 → saveMemory + searchMemory（同时保存并查询）
+                        - 如果用户问「我记得」「之前说过」「我的xxx」→ searchMemory
                         - 混合问题（公司IT+网络）→ searchKnowledgeBase
                         - 不确定时 → searchKnowledgeBase
 
