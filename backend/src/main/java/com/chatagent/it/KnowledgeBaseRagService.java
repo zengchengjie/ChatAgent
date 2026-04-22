@@ -89,8 +89,13 @@ public class KnowledgeBaseRagService {
             }
 
             StringBuilder result = new StringBuilder();
+            java.util.Set<String> seen = new java.util.HashSet<>();
             for (EmbeddingMatch<TextSegment> match : matches) {
-                result.append(match.embedded().text()).append("\n---\n");
+                String text = match.embedded().text().trim();
+                if (text.isBlank() || !seen.add(text)) {
+                    continue; // 去重
+                }
+                result.append(text).append("\n---\n");
             }
             return result.toString().trim();
         } finally {
