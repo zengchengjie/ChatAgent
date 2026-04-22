@@ -35,8 +35,8 @@ management:
       show-details: never
   tracing:
     sampling:
-      probability: 1.0
-    tracingEndpoint: http://111.229.177.132:4317
+      probability: 0.1
+    tracingEndpoint: http://111.229.177.132:4318/v1/traces
 
 app:
   jwt:

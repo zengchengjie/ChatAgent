@@ -156,6 +156,11 @@
             <artifactId>opentelemetry-semconv</artifactId>
             <version>1.25.0-alpha</version>
         </dependency>
+        <dependency>
+            <groupId>io.grpc</groupId>
+            <artifactId>grpc-netty-shaded</artifactId>
+            <version>1.68.0</version>
+        </dependency>
     </dependencies>
 
     <build>

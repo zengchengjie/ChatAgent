@@ -37,7 +37,7 @@ public class ITSupportGraphService {
         try (Scope scope = span.makeCurrent()) {
             span.setAttribute("session.id", sessionId);
             span.setAttribute("user.id", userId);
-            span.setAttribute("user.message", message);
+            span.setAttribute("user.message.length", message.length());
 
             RunnableConfig config = RunnableConfig.builder()
                     .threadId(sessionId)

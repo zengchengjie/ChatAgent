@@ -194,7 +194,7 @@ public class ITSupportGraphConfig {
                                         ? u.text()
                                         : "";
 
-                span.setAttribute("user.message", userMessage);
+                span.setAttribute("user.message.length", userMessage.length());
 
                 String prompt =
                         """
@@ -215,7 +215,7 @@ public class ITSupportGraphConfig {
                 String response =
                         chatModel.generate(List.of(UserMessage.from(prompt))).content().text();
 
-                span.setAttribute("llm.response", response);
+                span.setAttribute("llm.response.length", response.length());
 
                 String toolName = extractJsonString(response, "tool");
                 String toolInput = extractJsonString(response, "input");
@@ -267,7 +267,7 @@ public class ITSupportGraphConfig {
             Span span = tracer.spanBuilder("execute_tool." + toolName).startSpan();
             try (Scope scope = span.makeCurrent()) {
                 span.setAttribute("tool.name", toolName);
-                span.setAttribute("tool.input", toolInput);
+                span.setAttribute("tool.input.length", toolInput.length());
 
                 String result;
                 try {
@@ -297,10 +297,11 @@ public class ITSupportGraphConfig {
                                 }
                                 default -> "未知工具: " + toolName;
                             };
-                    span.setAttribute("tool.result", result);
+                    span.setAttribute("tool.result.length", result.length());
                 } catch (Exception e) {
                     span.recordException(e);
                     result = "工具执行失败: " + e.getMessage();
+                    span.setAttribute("tool.error", e.getClass().getSimpleName());
                 }
 
                 return CompletableFuture.completedFuture(Map.of(CHANNEL_LLM_RESPONSE, result));
