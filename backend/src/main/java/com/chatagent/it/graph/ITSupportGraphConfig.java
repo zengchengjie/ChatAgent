@@ -44,7 +44,7 @@ public class ITSupportGraphConfig {
     @Value("${spring.data.redis.password:}")
     private String redisPassword;
 
-    public static final String GRAPH_LLM_MODEL = "qwen3.5-122b-a10b";
+    public static final String GRAPH_LLM_MODEL = "qwen3.5-flash";
     public static final String CHANNEL_MESSAGES = "messages";
     public static final String CHANNEL_PENDING_ACTION = "pendingAction";
     public static final String CHANNEL_APPROVED = "approved";
