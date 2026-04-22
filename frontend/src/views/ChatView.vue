@@ -31,6 +31,9 @@ const messages = ref<MessageRow[]>([])
 const input = ref('')
 const busy = ref(false)
 const banner = ref('')
+/** 待审批状态 */
+const pendingSessionId = ref<string | null>(null)
+const pendingActionDesc = ref('')
 /** 桌面默认展开侧栏；窄屏默认收起，避免遮挡主内容 */
 function initialSidebarOpen(): boolean {
   if (typeof window === 'undefined') return true
@@ -248,14 +251,14 @@ async function send() {
   await scrollThreadToBottom()
 
   try {
-    const res = await fetch('/api/chat', {
+    const res = await fetch('/api/graph/chat', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'X-Session-Id': sid,
         Authorization: `Bearer ${auth.token}`,
       },
-      body: JSON.stringify({ message: text }),
+      body: JSON.stringify({ message: text, userId: auth.username || 'unknown' }),
     })
     if (res.status === 429) {
       banner.value = '请求过于频繁（429），请稍后再试。'
@@ -269,7 +272,18 @@ async function send() {
       return
     }
     const data = await res.json()
-    const answer = data.answer || ''
+    if (data.pending) {
+      pendingSessionId.value = sid
+      pendingActionDesc.value = data.pendingAction || ''
+      busy.value = false
+      return
+    }
+    if (data.error) {
+      banner.value = '错误：' + data.error
+      await reloadThread(sid)
+      return
+    }
+    const answer = data.response || ''
     
     // 模拟助手回复消息
     messages.value = [
@@ -294,6 +308,67 @@ async function send() {
     await reloadThread(sid)
   } finally {
     busy.value = false
+  }
+}
+
+async function approveAction(approved: boolean) {
+  const sid = pendingSessionId.value
+  if (!sid) return
+  const optimistic: MessageRow = {
+    id: -Date.now(),
+    role: 'ASSISTANT',
+    content: pendingActionDesc.value + (approved ? ' [已确认]' : ' [已拒绝]'),
+    toolCallsJson: null,
+    toolCallId: null,
+    createdAt: new Date().toISOString(),
+  }
+  messages.value = [...messages.value, optimistic]
+  pendingSessionId.value = null
+  pendingActionDesc.value = ''
+  banner.value = ''
+  await scrollThreadToBottom()
+
+  try {
+    const res = await fetch('/api/graph/approve', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${auth.token}`,
+      },
+      body: JSON.stringify({ sessionId: sid, approved }),
+    })
+    if (!res.ok) {
+      const t = await res.text()
+      banner.value = '审批失败：' + (t || String(res.status))
+      return
+    }
+    const data = await res.json()
+    if (data.pending) {
+      // 又需要审批（异常情况）
+      pendingSessionId.value = sid
+      pendingActionDesc.value = data.pendingAction || ''
+      return
+    }
+    if (data.error) {
+      banner.value = '错误：' + data.error
+      return
+    }
+    // 追加最终回复
+    messages.value = [
+      ...messages.value,
+      {
+        id: Date.now(),
+        role: 'ASSISTANT',
+        content: data.response || '',
+        toolCallsJson: null,
+        toolCallId: null,
+        createdAt: new Date().toISOString(),
+      },
+    ]
+    await scrollThreadToBottom()
+    await loadSessions()
+  } catch (e) {
+    banner.value = '审批请求失败'
   }
 }
 
@@ -431,6 +506,13 @@ function renderMarkdown(text: string): string {
         </div>
         <div class="header-right">
           <span v-if="banner" class="banner">{{ banner }}</span>
+          <div v-if="pendingActionDesc" class="approval-panel">
+            <div class="approval-desc">{{ pendingActionDesc }}</div>
+            <div class="approval-actions">
+              <button type="button" class="approve-btn" @click="approveAction(true)">✓ 确认</button>
+              <button type="button" class="reject-btn" @click="approveAction(false)">✕ 拒绝</button>
+            </div>
+          </div>
         </div>
       </header>
       <div ref="threadEl" class="thread" @scroll="onThreadScroll">
@@ -764,6 +846,41 @@ function renderMarkdown(text: string): string {
 .banner {
   color: #fbbf24;
   font-size: 0.85rem;
+}
+.approval-panel {
+  background: #1e293b;
+  border: 1px solid #3b82f6;
+  border-radius: 8px;
+  padding: 0.6rem 0.8rem;
+  max-width: 360px;
+}
+.approval-desc {
+  font-size: 0.8rem;
+  color: #e2e8f0;
+  white-space: pre-wrap;
+  margin-bottom: 0.5rem;
+}
+.approval-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+.approve-btn {
+  background: #2563eb;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  padding: 0.3rem 0.8rem;
+  cursor: pointer;
+  font-size: 0.8rem;
+}
+.reject-btn {
+  background: #374151;
+  color: #e2e8f0;
+  border: none;
+  border-radius: 4px;
+  padding: 0.3rem 0.8rem;
+  cursor: pointer;
+  font-size: 0.8rem;
 }
 .thread {
   flex: 1;

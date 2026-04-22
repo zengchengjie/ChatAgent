@@ -5,7 +5,6 @@ import static org.bsc.langgraph4j.StateGraph.START;
 
 import com.chatagent.config.DashScopeProperties;
 import com.chatagent.it.ITSupportTools;
-import dev.langchain4j.data.message.ChatMessage;
 import dev.langchain4j.data.message.UserMessage;
 import dev.langchain4j.model.chat.ChatLanguageModel;
 import dev.langchain4j.model.openai.OpenAiChatModel;
@@ -17,10 +16,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import org.bsc.langgraph4j.action.AsyncEdgeAction;
-import org.bsc.langgraph4j.RunnableConfig;
 import org.bsc.langgraph4j.StateGraph;
 import org.bsc.langgraph4j.action.AsyncNodeAction;
-import org.bsc.langgraph4j.action.Command;
 import org.bsc.langgraph4j.CompileConfig;
 import org.bsc.langgraph4j.CompiledGraph;
 import org.bsc.langgraph4j.GraphStateException;
@@ -100,25 +97,25 @@ public class ITSupportGraphConfig {
         var channels =
                 Map.<String, Channel<?>>of(
                         CHANNEL_MESSAGES,
-                        Channels.appender(() -> new java.util.ArrayList<ChatMessage>()),
+                        Channels.appender(() -> new java.util.ArrayList<String>()),
                         CHANNEL_PENDING_ACTION,
-                        Channels.base((o, n) -> n, () -> null),
+                        Channels.base((o, n) -> n, () -> ""),
                         CHANNEL_APPROVED,
-                        Channels.base((o, n) -> n, () -> null),
+                        Channels.base((o, n) -> n, () -> false),
                         CHANNEL_LLM_RESPONSE,
-                        Channels.base((o, n) -> n, () -> null),
+                        Channels.base((o, n) -> n, () -> ""),
                         CHANNEL_TOOL_NAME,
-                        Channels.base((o, n) -> n, () -> null),
+                        Channels.base((o, n) -> n, () -> ""),
                         CHANNEL_TOOL_INPUT,
-                        Channels.base((o, n) -> n, () -> null),
+                        Channels.base((o, n) -> n, () -> ""),
                         CHANNEL_ROUTER_OUTPUT,
-                        Channels.base((o, n) -> n, () -> null),
+                        Channels.base((o, n) -> n, () -> ""),
                         CHANNEL_USER_ID,
-                        Channels.base((o, n) -> n, () -> null),
+                        Channels.base((o, n) -> n, () -> ""),
                         CHANNEL_SESSION_ID,
-                        Channels.base((o, n) -> n, () -> null),
+                        Channels.base((o, n) -> n, () -> ""),
                         CHANNEL_NEEDS_APPROVAL,
-                        Channels.base((o, n) -> n, () -> null));
+                        Channels.base((o, n) -> n, () -> false));
 
         StateGraph<ITSupportGraphState> graph =
                 new StateGraph<>(channels, ITSupportGraphState::new);
@@ -134,7 +131,6 @@ public class ITSupportGraphConfig {
 
         // 边
         graph.addEdge(START, Nodes.ROUTER);
-        graph.addEdge(Nodes.EXECUTE_TOOL, Nodes.PENDING_APPROVAL);
         graph.addEdge(Nodes.RESPOND, END);
 
         // 条件边：从 router 路由到 execute 或 respond 或 pending
@@ -164,17 +160,40 @@ public class ITSupportGraphConfig {
                         Nodes.PENDING_APPROVAL,
                         Nodes.PENDING_APPROVAL));
 
+        // 条件边：从 execute_tool 路由（根据 needsApproval 决定是否需要审批）
+        graph.addConditionalEdges(
+                Nodes.EXECUTE_TOOL,
+                (AsyncEdgeAction<ITSupportGraphState>)
+                        state -> {
+                            Boolean needsApproval =
+                                    (Boolean) state.value(CHANNEL_NEEDS_APPROVAL).orElse(false);
+                            return CompletableFuture.completedFuture(
+                                    Boolean.TRUE.equals(needsApproval)
+                                            ? Nodes.PENDING_APPROVAL
+                                            : Nodes.RESPOND);
+                        },
+                Map.of(
+                        Nodes.PENDING_APPROVAL,
+                        Nodes.PENDING_APPROVAL,
+                        Nodes.RESPOND,
+                        Nodes.RESPOND));
+
         // 条件边：从 pending 审批路由
         graph.addConditionalEdges(
                 Nodes.PENDING_APPROVAL,
                 (AsyncEdgeAction<ITSupportGraphState>)
                         state -> {
-                            Boolean approved =
-                                    (Boolean) state.value(CHANNEL_APPROVED).orElse(null);
-                            String next = approved == null ? END : (approved ? Nodes.RESPOND : Nodes.ROUTER);
+                            Boolean needsApproval =
+                                    (Boolean) state.value(CHANNEL_NEEDS_APPROVAL).orElse(false);
+
+                            // 约定：
+                            // - needsApproval=true 表示“正在等待用户审批”，图在此中断（END）
+                            // - 审批接口会把 needsApproval 置为 false，并设置 approved=true/false
+                            // - 无论同意/拒绝，都直接 RESPOND（拒绝=不再重试路由，避免死循环）
+                            String next = needsApproval ? END : Nodes.RESPOND;
                             return CompletableFuture.completedFuture(next);
                         },
-                Map.of(Nodes.RESPOND, Nodes.RESPOND, Nodes.ROUTER, Nodes.ROUTER));
+                Map.of(END, END, Nodes.RESPOND, Nodes.RESPOND));
 
         return graph;
     }
@@ -186,14 +205,7 @@ public class ITSupportGraphConfig {
         return state -> {
             Span span = tracer.spanBuilder("router_node").startSpan();
             try (Scope scope = span.makeCurrent()) {
-                List<ChatMessage> messages = state.messages();
-                String userMessage =
-                        messages.isEmpty()
-                                ? ""
-                                : messages.get(messages.size() - 1) instanceof UserMessage u
-                                        ? u.text()
-                                        : "";
-
+                String userMessage = state.lastUserMessage();
                 span.setAttribute("user.message.length", userMessage.length());
 
                 String prompt =
@@ -328,8 +340,10 @@ public class ITSupportGraphConfig {
                     Map.of(
                             CHANNEL_PENDING_ACTION,
                             actionDesc,
+                            CHANNEL_NEEDS_APPROVAL,
+                            true,
                             CHANNEL_APPROVED,
-                            null // null = 等待审批
+                            false
                             ));
         };
     }
@@ -339,14 +353,7 @@ public class ITSupportGraphConfig {
             Span span = tracer.spanBuilder("respond_node").startSpan();
             try (Scope scope = span.makeCurrent()) {
                 String toolResult = (String) state.value(CHANNEL_LLM_RESPONSE).orElse("");
-                String toolName = (String) state.value(CHANNEL_TOOL_NAME).orElse(null);
-                List<ChatMessage> messages = state.messages();
-                String userMessage =
-                        messages.isEmpty()
-                                ? ""
-                                : messages.get(messages.size() - 1) instanceof UserMessage u
-                                        ? u.text()
-                                        : "";
+                String userMessage = state.lastUserMessage();
 
                 String finalResponse;
                 if (toolResult != null && !toolResult.isBlank()) {

@@ -1,7 +1,5 @@
 package com.chatagent.it.graph;
 
-import dev.langchain4j.data.message.ChatMessage;
-import dev.langchain4j.data.message.UserMessage;
 import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.Tracer;
 import io.opentelemetry.context.Scope;
@@ -14,8 +12,6 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.bsc.langgraph4j.CompiledGraph;
 import org.bsc.langgraph4j.RunnableConfig;
-import org.bsc.langgraph4j.StateGraph;
-import org.bsc.langgraph4j.checkpoint.BaseCheckpointSaver;
 import org.bsc.langgraph4j.state.StateSnapshot;
 import org.springframework.stereotype.Service;
 
@@ -25,7 +21,6 @@ import org.springframework.stereotype.Service;
 public class ITSupportGraphService {
 
     private final CompiledGraph<ITSupportGraphState> graph;
-    private final BaseCheckpointSaver checkpointSaver;
     private final Tracer tracer;
 
     /** 暂存 pending 上下文（sessionId → context） */
@@ -45,11 +40,11 @@ public class ITSupportGraphService {
 
             Map<String, Object> inputState = getOrCreateState(sessionId, userId);
 
-            // 添加用户消息到 messages channel
+            // 添加用户消息到 messages channel（字符串格式，便于序列化）
             @SuppressWarnings("unchecked")
-            List<ChatMessage> messages = (List<ChatMessage>) inputState.computeIfAbsent(
-                    ITSupportGraphConfig.CHANNEL_MESSAGES, k -> new ArrayList<ChatMessage>());
-            messages.add(UserMessage.from(message));
+            List<String> messages = (List<String>) inputState.computeIfAbsent(
+                    ITSupportGraphConfig.CHANNEL_MESSAGES, k -> new ArrayList<String>());
+            messages.add("USER:" + message);
 
             // 调用图执行
             Optional<ITSupportGraphState> resultOpt = graph.invoke(inputState, config);
@@ -60,9 +55,9 @@ public class ITSupportGraphService {
 
             ITSupportGraphState state = resultOpt.get();
             String pendingAction = (String) state.value(ITSupportGraphConfig.CHANNEL_PENDING_ACTION).orElse(null);
-            Boolean approved = (Boolean) state.value(ITSupportGraphConfig.CHANNEL_APPROVED).orElse(null);
+            Boolean needsApproval = (Boolean) state.value(ITSupportGraphConfig.CHANNEL_NEEDS_APPROVAL).orElse(false);
 
-            if (pendingAction != null && approved == null) {
+            if (needsApproval && pendingAction != null && !pendingAction.isBlank()) {
                 // 中断：等待用户审批
                 pendingContexts.put(sessionId, new PendingContext(pendingAction, new ConcurrentHashMap<>(state.data())));
                 span.setAttribute("result.pending", true);
@@ -99,10 +94,16 @@ public class ITSupportGraphService {
                     .threadId(sessionId)
                     .build();
 
-            // 更新状态：设置 approved
-            Map<String, Object> updatedState = new ConcurrentHashMap<>(ctx.snapshotData());
+            // 更新状态：设置 approved，重置 needsApproval
+            // 注意：ConcurrentHashMap 不允许 null value，用 HashMap 代替
+            Map<String, Object> snapshot = ctx.snapshotData();
+            Map<String, Object> updatedState = new java.util.HashMap<>(snapshot);
             updatedState.put(ITSupportGraphConfig.CHANNEL_APPROVED, approved);
-            updatedState.put(ITSupportGraphConfig.CHANNEL_PENDING_ACTION, null); // 清除 pending
+            updatedState.put(ITSupportGraphConfig.CHANNEL_NEEDS_APPROVAL, false);
+            updatedState.remove(ITSupportGraphConfig.CHANNEL_PENDING_ACTION); // 清除 pending
+            // 避免回到 router 时再次触发工具执行/再次进入 pending
+            updatedState.put(ITSupportGraphConfig.CHANNEL_TOOL_NAME, "");
+            updatedState.put(ITSupportGraphConfig.CHANNEL_TOOL_INPUT, "");
 
             // 重新调用图（从断点恢复）
             Optional<ITSupportGraphState> resultOpt = graph.invoke(updatedState, config);
@@ -136,7 +137,9 @@ public class ITSupportGraphService {
         } catch (Exception e) {
             log.debug("No checkpoint found for sessionId={}", sessionId, e);
         }
-        return new ConcurrentHashMap<>(ITSupportGraphState.initial(sessionId, userId));
+        Map<String, Object> initial = ITSupportGraphState.initial(sessionId, userId);
+        initial.entrySet().removeIf(e -> e.getValue() == null);
+        return new ConcurrentHashMap<>(initial);
     }
 
     public record PendingContext(String pendingAction, Map<String, Object> snapshotData) {}

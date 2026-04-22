@@ -35,10 +35,10 @@ management:
       show-details: never
   tracing:
     sampling:
-      probability: 0.1
+      probability: 1.0
   otlp:
     tracing:
-      endpoint: http://111.229.177.132:4318
+      endpoint: http://111.229.177.132:4318/v1/traces
 
 app:
   jwt:
