@@ -377,9 +377,13 @@ public class ITSupportGraphConfig {
             try (Scope scope = span.makeCurrent()) {
                 String toolResult = (String) state.value(CHANNEL_LLM_RESPONSE).orElse("");
                 String userMessage = state.lastUserMessage();
+                String toolName = (String) state.value(CHANNEL_TOOL_NAME).orElse("");
 
                 String finalResponse;
-                if (toolResult != null && !toolResult.isBlank()) {
+                // 工单等直接返回结果的工具，不走 LLM 整理
+                if (toolResult != null && toolResult.startsWith("工单已创建")) {
+                    finalResponse = toolResult;
+                } else if (toolResult != null && !toolResult.isBlank()) {
                     String prompt =
                             """
                             你是一个企业 IT 支持助手。用户提问了「%s」，以下是从知识库检索到的相关信息，请整理成简洁、口语化的回复，先给结论再说步骤，不要照搬原文格式。
