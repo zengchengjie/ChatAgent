@@ -74,7 +74,7 @@ it-support:
   chat-model: ${IT_SUPPORT_CHAT_MODEL:qwen3.5-flash}
   max-memory-messages: ${IT_SUPPORT_MAX_MEMORY_MESSAGES:20}
   rag-top-k: ${IT_SUPPORT_RAG_TOP_K:3}
-  semantic-cache-similarity-threshold: ${IT_SUPPORT_CACHE_THRESHOLD:0.6}
+  semantic-cache-similarity-threshold: ${IT_SUPPORT_CACHE_THRESHOLD:0.5}
   memory-enabled: ${IT_SUPPORT_MEMORY_ENABLED:true}
   memory-top-k: ${IT_SUPPORT_MEMORY_TOP_K:5}
   knowledge-base-path: ${IT_SUPPORT_KB_PATH:/Users/zengchengjie/IdeaProjects/ChatAgent/docs/it-knowledge-base.md}
