@@ -347,13 +347,12 @@ public class ITSupportGraphConfig {
         return state -> {
             String toolName = (String) state.value(CHANNEL_TOOL_NAME).orElse(null);
             String toolInput = (String) state.value(CHANNEL_TOOL_INPUT).orElse("");
-            String result = (String) state.value(CHANNEL_LLM_RESPONSE).orElse("");
 
             String actionDesc =
                     toolName != null
                             ? String.format(
-                                            "[%s]\n输入: %s\n结果: %s\n\n确认执行？yes=确认，no=拒绝",
-                                            toolName, toolInput, result)
+                                            "[%s]\n输入: %s\n\n确认执行？yes=确认，no=拒绝",
+                                            toolName, toolInput)
                             : "准备回复。确认发送？yes=确认，no=拒绝";
 
             return CompletableFuture.completedFuture(
