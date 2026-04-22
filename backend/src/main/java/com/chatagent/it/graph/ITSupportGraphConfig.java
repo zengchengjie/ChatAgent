@@ -227,8 +227,9 @@ public class ITSupportGraphConfig {
                         决策规则：
                         - 如果用户问题是公司IT相关（怎么联系IT、故障处理流程、内部经验）→ searchKnowledgeBase
                         - 如果能明确判断是纯网络配置问题（VPN参数、Wi-Fi密码、有线设置）且不涉及公司IT流程 → diagnoseNetwork
-                        - 如果用户提到自己的设备/品牌/习惯/系统等个人信息（首次透露）→ saveMemory
-                        - 如果用户问「我记得」「之前说过」「我的xxx」「你喜欢」「你记得」→ searchMemory
+                        - 如果用户陈述（不是问句）自己的设备/品牌/习惯/系统等个人信息（首次透露，用了"我""我的"）→ saveMemory
+                        - 如果用户问句询问自己的设备/习惯/之前说过什么（用了"什么""吗""怎么""记得"）→ searchMemory
+                        - 如果用户明确要求创建工单 → generateTicket
                         - 混合问题（公司IT+网络）→ searchKnowledgeBase
                         - 不确定时 → searchKnowledgeBase
 
