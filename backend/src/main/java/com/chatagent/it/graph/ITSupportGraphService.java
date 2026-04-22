@@ -1,6 +1,6 @@
 package com.chatagent.it.graph;
 
-import io.opentelemetry.api.trace.Span;
+import com.chatagent.it.SemanticCacheService;
 import io.opentelemetry.api.trace.Tracer;
 import io.opentelemetry.context.Scope;
 import java.util.ArrayList;
@@ -22,6 +22,7 @@ public class ITSupportGraphService {
 
     private final CompiledGraph<ITSupportGraphState> graph;
     private final Tracer tracer;
+    private final com.chatagent.it.SemanticCacheService semanticCache;
 
     /** 暂存 pending 上下文（sessionId → context） */
     private final ConcurrentHashMap<String, PendingContext> pendingContexts = new ConcurrentHashMap<>();
@@ -46,6 +47,16 @@ public class ITSupportGraphService {
                     ITSupportGraphConfig.CHANNEL_MESSAGES, k -> new ArrayList<String>());
             messages.add("USER:" + message);
 
+            // 语义缓存查询
+            SemanticCacheService.CacheHit cacheHit = semanticCache.findBestMatch(message);
+            if (cacheHit.hit()) {
+                span.setAttribute("cache.hit", true);
+                span.setAttribute("cache.similarity", cacheHit.similarity());
+                pendingContexts.remove(sessionId);
+                return GraphResult.ok(cacheHit.answer());
+            }
+            span.setAttribute("cache.hit", false);
+
             // 调用图执行
             Optional<ITSupportGraphState> resultOpt = graph.invoke(inputState, config);
 
@@ -65,9 +76,12 @@ public class ITSupportGraphService {
             }
 
             String response = (String) state.value(ITSupportGraphConfig.CHANNEL_LLM_RESPONSE).orElse(null);
+            String finalResponse = response != null ? response : "（无回复）";
+            // 写入语义缓存
+            semanticCache.put(message, finalResponse, cacheHit.queryVector());
             pendingContexts.remove(sessionId);
             span.setAttribute("result.pending", false);
-            return GraphResult.ok(response != null ? response : "（无回复）");
+            return GraphResult.ok(finalResponse);
 
         } catch (Exception e) {
             span.recordException(e);
