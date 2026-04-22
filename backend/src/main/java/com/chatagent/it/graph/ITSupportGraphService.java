@@ -24,6 +24,7 @@ public class ITSupportGraphService {
     private final CompiledGraph<ITSupportGraphState> graph;
     private final Tracer tracer;
     private final com.chatagent.it.SemanticCacheService semanticCache;
+    private final com.chatagent.it.ITSupportTools tools;
 
     /** 暂存 pending 上下文（sessionId → context） */
     private final ConcurrentHashMap<String, PendingContext> pendingContexts = new ConcurrentHashMap<>();
@@ -105,33 +106,23 @@ public class ITSupportGraphService {
                 return GraphResult.error("没有待审批的操作");
             }
 
-            RunnableConfig config = RunnableConfig.builder()
-                    .threadId(sessionId)
-                    .build();
+            // approved=true：直接执行工具并返回结果，跳过图的路由逻辑
+            // approved=false：返回拒绝消息
+            if (approved) {
+                Map<String, Object> snapshot = ctx.snapshotData();
+                String toolName = (String) snapshot.get(ITSupportGraphConfig.CHANNEL_TOOL_NAME);
+                String toolInput = (String) snapshot.getOrDefault(ITSupportGraphConfig.CHANNEL_TOOL_INPUT, "");
+                String userId = (String) snapshot.getOrDefault(ITSupportGraphConfig.CHANNEL_USER_ID, "unknown");
 
-            // 更新状态：设置 approved，重置 needsApproval
-            // 注意：ConcurrentHashMap 不允许 null value，用 HashMap 代替
-            Map<String, Object> snapshot = ctx.snapshotData();
-            Map<String, Object> updatedState = new java.util.HashMap<>(snapshot);
-            updatedState.put(ITSupportGraphConfig.CHANNEL_APPROVED, approved);
-            updatedState.put(ITSupportGraphConfig.CHANNEL_NEEDS_APPROVAL, false);
-            updatedState.remove(ITSupportGraphConfig.CHANNEL_PENDING_ACTION); // 清除 pending
-            // 避免回到 router 时再次触发工具执行/再次进入 pending
-            updatedState.put(ITSupportGraphConfig.CHANNEL_TOOL_NAME, "");
-            updatedState.put(ITSupportGraphConfig.CHANNEL_TOOL_INPUT, "");
-
-            // 重新调用图（从断点恢复）
-            Optional<ITSupportGraphState> resultOpt = graph.invoke(updatedState, config);
-
-            if (resultOpt.isEmpty()) {
-                return GraphResult.error("Graph execution returned no result");
+                // 直接调用工具
+                String toolResult = executeToolDirect(toolName, toolInput, userId);
+                span.setAttribute("tool.result", toolResult);
+                pendingContexts.remove(sessionId);
+                return GraphResult.ok(toolResult);
+            } else {
+                pendingContexts.remove(sessionId);
+                return GraphResult.ok("已取消操作。");
             }
-
-            ITSupportGraphState state = resultOpt.get();
-            String response = (String) state.value(ITSupportGraphConfig.CHANNEL_LLM_RESPONSE).orElse(null);
-            pendingContexts.remove(sessionId);
-
-            return GraphResult.ok(response != null ? response : "（无回复）");
 
         } catch (Exception e) {
             span.recordException(e);
@@ -139,6 +130,22 @@ public class ITSupportGraphService {
             return GraphResult.error("审批失败: " + e.getMessage());
         } finally {
             span.end();
+        }
+    }
+
+    /** 直接执行工具（绕过图） */
+    private String executeToolDirect(String toolName, String toolInput, String userId) {
+        if (toolName == null || toolName.isBlank()) {
+            return "（无工具可执行）";
+        }
+        try {
+            if ("generateTicket".equals(toolName)) {
+                return tools.generateTicket(userId, toolInput);
+            }
+            // 其他工具暂不支持直接调用
+            return "未知工具: " + toolName;
+        } catch (Exception e) {
+            return "工具执行失败: " + e.getMessage();
         }
     }
 

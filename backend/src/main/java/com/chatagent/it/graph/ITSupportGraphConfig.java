@@ -191,11 +191,8 @@ public class ITSupportGraphConfig {
                         state -> {
                             Boolean needsApproval =
                                     (Boolean) state.value(CHANNEL_NEEDS_APPROVAL).orElse(false);
-
-                            // 约定：
-                            // - needsApproval=true 表示“正在等待用户审批”，图在此中断（END）
-                            // - 审批接口会把 needsApproval 置为 false，并设置 approved=true/false
-                            // - 无论同意/拒绝，都直接 RESPOND（拒绝=不再重试路由，避免死循环）
+                            // needsApproval=true 表示”正在等待用户审批”，图在此中断（END）
+                            // 审批接口会直接处理，不走图的逻辑
                             String next = needsApproval ? END : Nodes.RESPOND;
                             return CompletableFuture.completedFuture(next);
                         },
