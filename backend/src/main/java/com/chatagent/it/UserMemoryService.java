@@ -71,8 +71,12 @@ public class UserMemoryService {
             redisTemplate.opsForValue().set(String.format(KEY_ENTRY, userId, id), json);
 
             // 同时存入向量库（用于语义检索）
-            TextSegment segment = TextSegment.from(json);
-            embeddingStore.add(embeddingModel.embed(segment).content(), segment);
+            try {
+                TextSegment segment = TextSegment.from(json);
+                embeddingStore.add(embeddingModel.embed(segment).content(), segment);
+            } catch (Exception e) {
+                log.warn("Failed to embed memory, skipping vector store: {}", e.getMessage());
+            }
 
             log.info("Saved memory id={} userId={} type={}", id, userId, type);
             return id;
@@ -93,22 +97,37 @@ public class UserMemoryService {
             return List.of();
         }
 
-        var queryEmbedding = embeddingModel.embed(query).content();
-        var searchRequest = EmbeddingSearchRequest.builder()
-                .queryEmbedding(queryEmbedding)
-                .maxResults(topK * 3) // 多取一些，后面按衰减过滤
-                .build();
-
-        List<EmbeddingMatch<TextSegment>> matches = embeddingStore.search(searchRequest).matches();
+        List<EmbeddingMatch<TextSegment>> matches;
+        try {
+            var queryEmbedding = embeddingModel.embed(query).content();
+            var searchRequest = EmbeddingSearchRequest.builder()
+                    .queryEmbedding(queryEmbedding)
+                    .maxResults(topK * 3) // 多取一些，后面按衰减过滤
+                    .build();
+            matches = embeddingStore.search(searchRequest).matches();
+        } catch (Exception e) {
+            log.warn("Failed to embed query, returning empty results: {}", e.getMessage());
+            matches = List.of();
+        }
+        log.debug("Memory search for userId={} query={} found {} matches", userId, query, matches.size());
         List<UserMemoryEntry> results = new ArrayList<>();
 
         for (EmbeddingMatch<TextSegment> match : matches) {
+            String text = match.embedded().text();
+            log.debug("Memory match text={} score={}", text.substring(0, Math.min(80, text.length())), match.score());
             try {
-                UserMemoryEntry entry = objectMapper.readValue(match.embedded().text(), UserMemoryEntry.class);
+                // 过滤掉非记忆数据（如 RAG 结果"无法连接 VPN..."）
+                if (text == null || !text.startsWith("{")) {
+                    log.debug("Skipping non-memory text: {}", text.substring(0, Math.min(50, text.length())));
+                    continue;
+                }
+                UserMemoryEntry entry = objectMapper.readValue(text, UserMemoryEntry.class);
                 if (!entry.userId().equals(userId)) {
+                    log.debug("Skipping memory for different user: expected={} got={}", userId, entry.userId());
                     continue; // 跨用户过滤
                 }
                 double decayedScore = decayedScore(match.score(), entry.createdAt());
+                log.debug("Memory decayed score={} for entry createdAt={}", decayedScore, entry.createdAt());
                 if (decayedScore < DECAY_MIN_SCORE) {
                     continue;
                 }
@@ -117,7 +136,7 @@ public class UserMemoryService {
                     break;
                 }
             } catch (JsonProcessingException e) {
-                log.warn("Failed to deserialize memory entry", e);
+                log.warn("Failed to deserialize memory entry, skipping: text={}", text.substring(0, Math.min(100, text.length())));
             }
         }
 

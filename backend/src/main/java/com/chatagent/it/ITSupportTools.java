@@ -76,18 +76,21 @@ public class ITSupportTools {
             name = "saveMemory",
             value =
                     "保存长期记忆：从对话中提炼并存储关键事实、偏好或知识。类型：fact（姓名/部门/设备等）、preference（界面或沟通习惯）、knowledge（用户提供的知识，如「我用 MacBook」）。用户透露可复用的个人信息时调用。content 须在 50 字以内。")
-    public void saveMemory(String sessionId, String content, String type, List<String> tags) {
-        if (content == null || content.isBlank()) return;
+    public String saveMemory(String userId, String content, String type, List<String> tags) {
+        if (content == null || content.isBlank()) return "内容为空，未保存";
         UserMemoryEntry.MemoryType memoryType;
         try {
             memoryType = UserMemoryEntry.MemoryType.valueOf(type.trim().toLowerCase());
         } catch (Exception e) {
             memoryType = UserMemoryEntry.MemoryType.fact;
         }
-        String saved = memoryService.save(sessionId, content, memoryType, tags);
+        String saved = memoryService.save(userId, content, memoryType, tags);
         if (saved != null) {
             System.out.println("=== Memory Saved ===");
-            System.out.println("sessionId=" + sessionId + " id=" + saved);
+            System.out.println("userId=" + userId + " id=" + saved);
+            return "记忆已保存";
+        } else {
+            return "记忆已存在";
         }
     }
 
@@ -95,8 +98,8 @@ public class ITSupportTools {
             name = "searchMemory",
             value =
                     "检索用户长期记忆：对用户历史记忆做语义搜索，返回相关事实、偏好与知识作为上下文。")
-    public String searchMemory(String sessionId, String query) {
-        List<UserMemoryEntry> entries = memoryService.search(sessionId, query, 5);
+    public String searchMemory(String userId, String query) {
+        List<UserMemoryEntry> entries = memoryService.search(userId, query, 5);
         if (entries.isEmpty()) {
             return "未找到相关记忆。";
         }

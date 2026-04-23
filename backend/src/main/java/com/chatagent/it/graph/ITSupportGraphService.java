@@ -1,6 +1,10 @@
 package com.chatagent.it.graph;
 
+import com.chatagent.chat.ChatService;
+import com.chatagent.chat.MessageRole;
+import com.chatagent.it.ITSupportTools;
 import com.chatagent.it.SemanticCacheService;
+import com.chatagent.security.SecurityUtils;
 import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.Tracer;
 import io.opentelemetry.context.Scope;
@@ -23,8 +27,9 @@ public class ITSupportGraphService {
 
     private final CompiledGraph<ITSupportGraphState> graph;
     private final Tracer tracer;
-    private final com.chatagent.it.SemanticCacheService semanticCache;
-    private final com.chatagent.it.ITSupportTools tools;
+    private final SemanticCacheService semanticCache;
+    private final ITSupportTools tools;
+    private final ChatService chatService;
 
     /** 暂存 pending 上下文（sessionId → context） */
     private final ConcurrentHashMap<String, PendingContext> pendingContexts = new ConcurrentHashMap<>();
@@ -49,9 +54,9 @@ public class ITSupportGraphService {
                     ITSupportGraphConfig.CHANNEL_MESSAGES, k -> new ArrayList<String>());
             messages.add("USER:" + message);
 
-            // 语义缓存查询
+            // 语义缓存查询（疑问句跳过缓存，因为意图可能不同）
             SemanticCacheService.CacheHit cacheHit = semanticCache.findBestMatch(message);
-            if (cacheHit.hit()) {
+            if (cacheHit.hit() && !isQuestion(message)) {
                 span.setAttribute("cache.hit", true);
                 span.setAttribute("cache.similarity", cacheHit.similarity());
                 pendingContexts.remove(sessionId);
@@ -71,9 +76,10 @@ public class ITSupportGraphService {
             Boolean needsApproval = (Boolean) state.value(ITSupportGraphConfig.CHANNEL_NEEDS_APPROVAL).orElse(false);
 
             if (needsApproval && pendingAction != null && !pendingAction.isBlank()) {
-                // 中断：等待用户审批
+                // 中断：等待用户审批，先把用户消息持久化
                 pendingContexts.put(sessionId, new PendingContext(pendingAction, new ConcurrentHashMap<>(state.data())));
                 span.setAttribute("result.pending", true);
+                persistMessage(sessionId, message, null);
                 return GraphResult.pending(pendingAction);
             }
 
@@ -83,6 +89,10 @@ public class ITSupportGraphService {
             semanticCache.put(message, finalResponse, cacheHit.queryVector());
             pendingContexts.remove(sessionId);
             span.setAttribute("result.pending", false);
+
+            // 持久化消息到数据库
+            persistMessage(sessionId, message, finalResponse);
+
             return GraphResult.ok(finalResponse);
 
         } catch (Exception e) {
@@ -118,6 +128,7 @@ public class ITSupportGraphService {
                 String toolResult = executeToolDirect(toolName, toolInput, userId);
                 span.setAttribute("tool.result", toolResult);
                 pendingContexts.remove(sessionId);
+                persistMessage(sessionId, null, toolResult);
                 return GraphResult.ok(toolResult);
             } else {
                 pendingContexts.remove(sessionId);
@@ -175,6 +186,36 @@ public class ITSupportGraphService {
         }
         public static GraphResult error(String error) {
             return new GraphResult(null, null, error, false);
+        }
+    }
+
+    private boolean isQuestion(String message) {
+        if (message == null || message.isBlank()) {
+            return false;
+        }
+        // 检查是否以问号结尾（中文或英文）
+        boolean endsWithQuestionMark = message.trim().endsWith("？") || message.trim().endsWith("?");
+        // 检查是否包含常见疑问词
+        boolean containsQuestionWord = message.contains("什么") || message.contains("吗") ||
+                                      message.contains("怎么") || message.contains("记得") ||
+                                      message.contains("哪") || message.contains("谁") ||
+                                      message.contains("何时") || message.contains("为什么") ||
+                                      message.contains("如何") || message.contains("会不会") ||
+                                      message.contains("是不是") || message.contains("有没有");
+        return endsWithQuestionMark || containsQuestionWord;
+    }
+
+    private void persistMessage(String sessionId, String userMessage, String assistantMessage) {
+        try {
+            Long userId = SecurityUtils.requirePrincipal().userId();
+            if (userMessage != null) {
+                chatService.appendMessage(userId, sessionId, MessageRole.USER, userMessage, null, null);
+            }
+            if (assistantMessage != null) {
+                chatService.appendMessage(userId, sessionId, MessageRole.ASSISTANT, assistantMessage, null, null);
+            }
+        } catch (Exception e) {
+            log.warn("Failed to persist graph messages for sessionId={}", sessionId, e);
         }
     }
 }

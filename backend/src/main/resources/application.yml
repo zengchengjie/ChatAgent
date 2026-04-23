@@ -52,12 +52,13 @@ app:
 
 dashscope:
   api-key: ${DASHSCOPE_API_KEY:sk-36690807ab8f4a3f84bd816996e645c5}
-  base-url: ${DASHSCOPE_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}
-  model: ${DASHSCOPE_MODEL:qwen3.5-flash}
+  base-url: ${DASHSCOPE_BASE_URL:https://dashscope.cn-hangzhou.aliyuncs.com/compatible-mode/v1}
+  model: ${DASHSCOPE_MODEL:qwen-turbo}
   allowed-models:
     - tongyi-xiaomi-analysis-pro
     - tongyi-xiaomi-analysis-flash
     - qwen3.5-122b-a10b
+    - qwen-turbo
     - qwen3.5-flash
     - qwen3.5-35b-a3b
     - qwen3.5-plus
@@ -65,13 +66,21 @@ dashscope:
     - qwen3-max-2026-01-23
     - qwen3.5-27b
     - glm-5
-  connect-timeout-ms: ${DASHSCOPE_CONNECT_TIMEOUT_MS:10000}
-  read-timeout-ms: ${DASHSCOPE_READ_TIMEOUT_MS:120000}
+  connect-timeout-ms: ${DASHSCOPE_CONNECT_TIMEOUT_MS:5000}
+  read-timeout-ms: ${DASHSCOPE_READ_TIMEOUT_MS:30000}
   max-tokens: ${DASHSCOPE_MAX_TOKENS:4096}
   temperature: ${DASHSCOPE_TEMPERATURE:0.3}
 
+ollama:
+  base-url: ${OLLAMA_BASE_URL:http://localhost:11434/v1}
+  model: ${OLLAMA_MODEL:deepseek-r1:1.5b}
+  connect-timeout-ms: ${OLLAMA_CONNECT_TIMEOUT_MS:5000}
+  read-timeout-ms: ${OLLAMA_READ_TIMEOUT_MS:10000}
+  temperature: ${OLLAMA_TEMPERATURE:0.1}
+  max-retries: ${OLLAMA_MAX_RETRIES:0}
+
 it-support:
-  chat-model: ${IT_SUPPORT_CHAT_MODEL:qwen3.5-flash}
+  chat-model: ${IT_SUPPORT_CHAT_MODEL:qwen-turbo}
   max-memory-messages: ${IT_SUPPORT_MAX_MEMORY_MESSAGES:20}
   rag-top-k: ${IT_SUPPORT_RAG_TOP_K:3}
   semantic-cache-similarity-threshold: ${IT_SUPPORT_CACHE_THRESHOLD:0.5}

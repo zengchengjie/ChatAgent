@@ -6,6 +6,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
+import org.springframework.context.annotation.Lazy;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
@@ -34,7 +35,7 @@ public class ModelHealthCheckService {
     private static final long RECOVERY_CHECK_INTERVAL_MS = 30000; // 30秒
     private static final String HEALTH_CHECK_PROMPT = "请回复'OK'";
 
-    public ModelHealthCheckService(ModelRouterService modelRouterService) {
+    public ModelHealthCheckService(@Lazy ModelRouterService modelRouterService) {
         this.modelRouterService = modelRouterService;
 
         // 初始化状态
@@ -166,14 +167,14 @@ public class ModelHealthCheckService {
     private void setHealthy(ModelRouterService.ModelType type, String reason) {
         HealthStatus newStatus = new HealthStatus(true, LocalDateTime.now(), reason);
         healthStatus.put(type, newStatus);
-        modelRouterService.setModelHealthy(type, true);
+        modelRouterService.updateModelHealthCache(type, true);
         log.info("Model {} marked as HEALTHY: {}", type, reason);
     }
 
     private void setUnhealthy(ModelRouterService.ModelType type, String reason) {
         HealthStatus newStatus = new HealthStatus(false, LocalDateTime.now(), reason);
         healthStatus.put(type, newStatus);
-        modelRouterService.setModelHealthy(type, false);
+        modelRouterService.updateModelHealthCache(type, false);
         log.warn("Model {} marked as UNHEALTHY: {}", type, reason);
     }
 

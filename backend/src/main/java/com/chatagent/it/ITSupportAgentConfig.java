@@ -7,12 +7,15 @@ import dev.langchain4j.model.openai.OpenAiEmbeddingModel;
 import dev.langchain4j.store.embedding.redis.RedisEmbeddingStore;
 import dev.langchain4j.service.AiServices;
 import java.time.Duration;
+import java.util.Map;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Primary;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 @Configuration
+@Slf4j
 public class ITSupportAgentConfig {
 
     @Value("${spring.data.redis.host}")
@@ -26,11 +29,24 @@ public class ITSupportAgentConfig {
 
     @Bean
     EmbeddingModel itSupportEmbeddingModel(DashScopeProperties properties) {
+        // Try different configurations for DashScope embedding
+        // DashScope embedding might require different endpoint or parameters
+        String baseUrl = properties.getBaseUrl();
+        // If using compatible mode, embedding endpoint might be different
+        if (baseUrl.contains("/compatible-mode/v1")) {
+            baseUrl = baseUrl.replace("/compatible-mode/v1", "/v1");
+        }
+
         return OpenAiEmbeddingModel.builder()
                 .apiKey(properties.getApiKey())
-                .baseUrl(properties.getBaseUrl())
+                .baseUrl(baseUrl)
                 .modelName("text-embedding-v2")
-                .timeout(Duration.ofMillis(properties.getReadTimeoutMs()))
+                .timeout(Duration.ofMillis(3000))
+                .maxRetries(1)
+                .customHeaders(Map.of(
+                    "X-DashScope-Version", "2024-01-01",
+                    "Authorization", "Bearer " + properties.getApiKey()
+                ))
                 .build();
     }
 
@@ -66,6 +82,11 @@ public class ITSupportAgentConfig {
                 .modelName(itSupportProperties.getChatModel())
                 .temperature((double) properties.getTemperature())
                 .timeout(Duration.ofMillis(properties.getReadTimeoutMs()))
+                .maxRetries(1)
+                .customHeaders(Map.of(
+                    "X-DashScope-Version", "2024-01-01",
+                    "Authorization", "Bearer " + properties.getApiKey()
+                ))
                 .build();
     }
 

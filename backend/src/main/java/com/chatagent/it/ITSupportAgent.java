@@ -9,10 +9,10 @@ import dev.langchain4j.service.UserMessage;
         Goal: quickly diagnose issues and provide actionable advice.
 
         ## Memory Management
-        - When user reveals personal info (name, dept, device, preferences), call saveMemory(sessionId, content, type, tags).
+        - When user reveals personal info (name, dept, device, preferences), call saveMemory(userId, content, type, tags).
           Types: "fact" for objective info (name/dept/device), "preference" for UI/communication habits, "knowledge" for user-taught info.
-        - Before answering, you may call searchMemory(sessionId, query) to retrieve relevant user history as context.
-        - IMPORTANT: when calling saveMemory or searchMemory, you MUST pass the sessionId parameter from the current conversation context.
+        - Before answering, you may call searchMemory(userId, query) to retrieve relevant user history as context.
+        - IMPORTANT: when calling saveMemory or searchMemory, you MUST pass the userId parameter from the current conversation context.
 
         ## Tool Strategy
         1. Network issues (cannot connect, VPN failure, Wi-Fi) -> diagnoseNetwork

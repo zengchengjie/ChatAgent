@@ -134,18 +134,24 @@ public class ModelRouterService {
     }
 
     /**
-     * 手动设置模型健康状态
+     * 更新模型健康状态缓存（供 ModelHealthCheckService 内部调用）
      */
-    public void setModelHealthy(ModelType type, boolean healthy) {
-        String reason = healthy ? "Manually set healthy" : "Manually set unhealthy";
-        healthCheckService.setModelHealth(type, healthy, reason);
-
-        // 更新缓存
+    void updateModelHealthCache(ModelType type, boolean healthy) {
         if (type == ModelType.DASHSCOPE) {
             dashscopeHealthy.set(healthy);
         } else {
             ollamaHealthy.set(healthy);
         }
+        log.debug("Model {} health cache updated to: {}", type, healthy);
+    }
+
+    /**
+     * 手动设置模型健康状态（外部调用）
+     */
+    public void setModelHealthy(ModelType type, boolean healthy) {
+        String reason = healthy ? "Manually set healthy" : "Manually set unhealthy";
+        healthCheckService.setModelHealth(type, healthy, reason);
+        // 缓存会由 healthCheckService 通过 updateModelHealthCache 更新
         log.info("Model {} health manually set to: {}", type, healthy);
     }
 

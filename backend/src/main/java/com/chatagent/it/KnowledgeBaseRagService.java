@@ -50,14 +50,22 @@ public class KnowledgeBaseRagService {
 
             String markdown = Files.readString(knowledgeFile, StandardCharsets.UTF_8);
             List<String> chunks = splitMarkdown(markdown);
+            int successCount = 0;
             for (String chunk : chunks) {
-                TextSegment segment = TextSegment.from(chunk);
-                embeddingStore.add(embeddingModel.embed(segment).content(), segment);
+                try {
+                    TextSegment segment = TextSegment.from(chunk);
+                    embeddingStore.add(embeddingModel.embed(segment).content(), segment);
+                    successCount++;
+                } catch (Exception e) {
+                    log.warn("Failed to embed chunk, skipping: {}", e.getMessage());
+                }
             }
-            indexed = true;
-            log.info("Indexed IT knowledge base chunks={}", chunks.size());
-        } catch (IOException e) {
-            throw new ApiException(HttpStatus.INTERNAL_SERVER_ERROR, "知识库加载失败: " + e.getMessage());
+            indexed = successCount > 0;
+            log.info("Indexed IT knowledge base chunks={}/{}", successCount, chunks.size());
+        } catch (Exception e) {
+            log.error("Failed to load and index knowledge base", e);
+            // Do not throw to allow application startup
+            log.warn("RAG indexing failed, search will return placeholder.");
         }
     }
 
@@ -76,13 +84,18 @@ public class KnowledgeBaseRagService {
             }
             span.setAttribute("indexed", true);
 
-            var queryEmbedding = embeddingModel.embed(query).content();
-            var searchRequest = EmbeddingSearchRequest.builder()
-                    .queryEmbedding(queryEmbedding)
-                    .maxResults(properties.getRagTopK())
-                    .build();
-
-            List<EmbeddingMatch<TextSegment>> matches = embeddingStore.search(searchRequest).matches();
+            List<EmbeddingMatch<TextSegment>> matches;
+            try {
+                var queryEmbedding = embeddingModel.embed(query).content();
+                var searchRequest = EmbeddingSearchRequest.builder()
+                        .queryEmbedding(queryEmbedding)
+                        .maxResults(properties.getRagTopK())
+                        .build();
+                matches = embeddingStore.search(searchRequest).matches();
+            } catch (Exception e) {
+                log.warn("Failed to embed query for RAG search: {}", e.getMessage());
+                matches = List.of();
+            }
             span.setAttribute("match_count", matches.size());
             if (matches.isEmpty()) {
                 return "知识库中暂未检索到相关内容。";

@@ -45,9 +45,6 @@ const editingSessionId = ref<string | null>(null)
 const editingTitle = ref('')
 const showSessionMenu = ref<string | null>(null)
 
-const allowedModels = ref<string[]>([])
-const selectedModel = ref<string>('qwen3.5-flash')
-
 const title = computed(() => sessions.value.find((s) => s.id === activeId.value)?.title ?? '对话')
 
 const filteredSessions = computed(() => {
@@ -106,24 +103,9 @@ async function loadSessions() {
   }
 }
 
-async function loadModels() {
-  try {
-    const ms = await apiJson<string[]>('/api/models')
-    if (Array.isArray(ms) && ms.length > 0) {
-      allowedModels.value = ms
-      if (!ms.includes(selectedModel.value)) {
-        selectedModel.value = ms[0]
-      }
-    }
-  } catch {
-    // degrade: keep default
-  }
-}
-
 async function createSession() {
   const s = await apiJson<SessionRow>('/api/sessions', {
     method: 'POST',
-    body: JSON.stringify({ model: selectedModel.value }),
   })
   sessions.value = [s, ...sessions.value]
   await selectSession(s.id)
@@ -380,7 +362,6 @@ async function reloadThread(sid: string) {
 
 onMounted(async () => {
   try {
-    await loadModels()
     await loadSessions()
     if (sessions.value.length === 0) {
       await createSession()
@@ -417,13 +398,6 @@ function renderMarkdown(text: string): string {
     <div class="sidebar-overlay" :class="{ open: sidebarOpen }" @click="sidebarOpen = false"></div>
     <aside class="sidebar" :class="{ open: sidebarOpen }">
       <div class="brand">Chat Agent</div>
-      <div class="model-picker">
-        <label class="model-label">模型</label>
-        <select v-model="selectedModel" class="model-select">
-          <option v-for="m in allowedModels" :key="m" :value="m">{{ m }}</option>
-          <option v-if="allowedModels.length === 0" :value="selectedModel">{{ selectedModel }}</option>
-        </select>
-      </div>
       <button class="new-chat" type="button" @click="createSession">+ 新建对话</button>
       <div class="search-box">
         <input 
