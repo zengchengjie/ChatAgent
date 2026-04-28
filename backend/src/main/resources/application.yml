@@ -16,8 +16,8 @@ spring:
     locations: classpath:db/migration
   data:
     redis:
-      host: ${REDIS_HOST:111.229.177.132}
-      port: ${REDIS_PORT:6379}
+      host: ${CHAT_AGENT_REDIS_HOST:localhost}
+      port: ${CHAT_AGENT_REDIS_PORT:6379}
       password: ${REDIS_PASSWORD:}
       repositories:
         enabled: false
@@ -38,7 +38,7 @@ management:
       probability: 1.0
   otlp:
     tracing:
-      endpoint: http://111.229.177.132:4318/v1/traces
+      endpoint: ${OTLP_ENDPOINT}
 
 app:
   jwt:
@@ -51,7 +51,7 @@ app:
     bootstrap-password: ${ADMIN_BOOTSTRAP_PASSWORD:admin}
 
 dashscope:
-  api-key: ${DASHSCOPE_API_KEY:sk-36690807ab8f4a3f84bd816996e645c5}
+  api-key: ${DASHSCOPE_API_KEY:}
   base-url: ${DASHSCOPE_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}
   model: ${DASHSCOPE_MODEL:qwen3.5-flash}
   allowed-models:
