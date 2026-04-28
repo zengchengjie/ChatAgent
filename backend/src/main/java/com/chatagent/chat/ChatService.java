@@ -3,8 +3,10 @@ package com.chatagent.chat;
 import com.chatagent.chat.dto.MessageResponse;
 import com.chatagent.chat.dto.SessionResponse;
 import com.chatagent.common.ApiException;
+import com.chatagent.config.DashScopeProperties;
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
@@ -18,13 +20,15 @@ public class ChatService {
 
     private final ChatSessionRepository sessionRepository;
     private final ChatMessageRepository messageRepository;
+    private final DashScopeProperties dashScopeProperties;
 
     @Transactional
-    public SessionResponse createSession(Long userId, String title) {
+    public SessionResponse createSession(Long userId, String title, String model) {
         ChatSession s = new ChatSession();
         s.setId(UUID.randomUUID().toString());
         s.setUserId(userId);
         s.setTitle(title != null && !title.isBlank() ? title : "New chat");
+        s.setModel(model != null && !model.isBlank() ? model : dashScopeProperties.getModel());
         Instant now = Instant.now();
         s.setCreatedAt(now);
         s.setUpdatedAt(now);
@@ -45,6 +49,24 @@ public class ChatService {
         return messageRepository.findBySessionIdOrderByCreatedAtAsc(s.getId()).stream()
                 .map(this::toMessageResponse)
                 .toList();
+    }
+
+    @Transactional
+    public void deleteSession(Long userId, String sessionId) {
+        ChatSession s = getOwnedSession(userId, sessionId);
+        messageRepository.deleteBySessionId(s.getId());
+        sessionRepository.delete(s);
+    }
+
+    @Transactional
+    public SessionResponse updateSessionTitle(Long userId, String sessionId, String title) {
+        ChatSession s = getOwnedSession(userId, sessionId);
+        if (title != null && !title.isBlank()) {
+            s.setTitle(title);
+        }
+        s.setUpdatedAt(Instant.now());
+        sessionRepository.save(s);
+        return toSessionResponse(s);
     }
 
     /**
@@ -77,6 +99,16 @@ public class ChatService {
         return getOwnedSession(userId, sessionId);
     }
 
+    @Transactional(readOnly = true)
+    public Optional<String> findSessionModel(Long userId, String sessionId) {
+        ChatSession s = getOwnedSession(userId, sessionId);
+        String model = s.getModel();
+        if (model == null || model.isBlank()) {
+            return Optional.empty();
+        }
+        return Optional.of(model);
+    }
+
     private ChatSession getOwnedSession(Long userId, String sessionId) {
         ChatSession s =
                 sessionRepository
@@ -102,6 +134,7 @@ public class ChatService {
         return SessionResponse.builder()
                 .id(s.getId())
                 .title(s.getTitle())
+                .model(s.getModel())
                 .createdAt(s.getCreatedAt())
                 .updatedAt(s.getUpdatedAt())
                 .build();

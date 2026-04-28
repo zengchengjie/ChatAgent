@@ -9,6 +9,7 @@ import lombok.Value;
 public class SessionResponse {
     String id;
     String title;
+    String model;
     Instant createdAt;
     Instant updatedAt;
 }

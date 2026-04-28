@@ -1,4 +1,5 @@
 import { useAuthStore } from '../stores/auth'
+import router from '../router'
 
 export class ApiError extends Error {
   status: number
@@ -30,6 +31,9 @@ export async function apiJson<T>(
   const text = await res.text()
   if (res.status === 401) {
     auth.clear()
+    if (!path.startsWith('/api/auth/login')) {
+      router.replace({ name: 'login', query: { redirect: window.location.pathname + window.location.search } })
+    }
   }
   if (!res.ok) {
     throw new ApiError(res.status, text)

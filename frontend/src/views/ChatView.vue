@@ -3,12 +3,12 @@ import { computed, nextTick, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { apiJson, ApiError } from '../api/http'
-import { consumeSse } from '../utils/sse'
 import { marked } from 'marked'
 
 interface SessionRow {
   id: string
   title: string
+  model?: string
   createdAt: string
   updatedAt: string
 }
@@ -22,11 +22,6 @@ interface MessageRow {
   createdAt: string
 }
 
-interface TimelineEvent {
-  type: 'plan_start' | 'plan_step' | 'plan_done' | 'tool_start' | 'tool_end'
-  text: string
-}
-
 const router = useRouter()
 const auth = useAuthStore()
 
@@ -35,11 +30,32 @@ const activeId = ref<string | null>(null)
 const messages = ref<MessageRow[]>([])
 const input = ref('')
 const busy = ref(false)
-const streamPreview = ref('')
-const timelineEvents = ref<TimelineEvent[]>([])
 const banner = ref('')
+/** 待审批状态 */
+const pendingSessionId = ref<string | null>(null)
+const pendingActionDesc = ref('')
+/** 桌面默认展开侧栏；窄屏默认收起，避免遮挡主内容 */
+function initialSidebarOpen(): boolean {
+  if (typeof window === 'undefined') return true
+  return window.innerWidth > 960
+}
+const sidebarOpen = ref(initialSidebarOpen())
+const searchQuery = ref('')
+const editingSessionId = ref<string | null>(null)
+const editingTitle = ref('')
+const showSessionMenu = ref<string | null>(null)
 
-const title = computed(() => sessions.value.find((s) => s.id === activeId.value)?.title ?? 'Conversation')
+const title = computed(() => sessions.value.find((s) => s.id === activeId.value)?.title ?? '对话')
+
+const filteredSessions = computed(() => {
+  if (!searchQuery.value.trim()) {
+    return sessions.value
+  }
+  const query = searchQuery.value.toLowerCase()
+  return sessions.value.filter(s => 
+    s.title.toLowerCase().includes(query)
+  )
+})
 
 const threadEl = ref<HTMLElement | null>(null)
 const stickToBottom = ref(true)
@@ -90,16 +106,105 @@ async function loadSessions() {
 async function createSession() {
   const s = await apiJson<SessionRow>('/api/sessions', {
     method: 'POST',
-    body: JSON.stringify({}),
   })
   sessions.value = [s, ...sessions.value]
   await selectSession(s.id)
 }
 
+async function deleteSession(id: string) {
+  const target = sessions.value.find((s) => s.id === id)
+  const name = target?.title || '该对话'
+  const ok = window.confirm(`确定删除“${name}”吗？此操作不可撤销。`)
+  if (!ok) {
+    return
+  }
+  banner.value = ''
+  await apiJson<void>(`/api/sessions/${id}`, { method: 'DELETE' })
+  const remaining = sessions.value.filter((s) => s.id !== id)
+  sessions.value = remaining
+
+  if (remaining.length === 0) {
+    messages.value = []
+    activeId.value = null
+    await createSession()
+    return
+  }
+
+  if (activeId.value === id) {
+    await selectSession(remaining[0].id)
+  }
+}
+
+async function renameSession(id: string) {
+  const session = sessions.value.find((s) => s.id === id)
+  if (!session) return
+  
+  editingSessionId.value = id
+  editingTitle.value = session.title
+}
+
+async function saveRename() {
+  if (!editingSessionId.value) return
+  
+  try {
+    const updated = await apiJson<SessionRow>(`/api/sessions/${editingSessionId.value}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ title: editingTitle.value }),
+    })
+    
+    const index = sessions.value.findIndex(s => s.id === editingSessionId.value)
+    if (index >= 0) {
+      sessions.value[index] = updated
+    }
+  } catch (e) {
+    banner.value = '重命名失败'
+  } finally {
+    editingSessionId.value = null
+    editingTitle.value = ''
+  }
+}
+
+function cancelRename() {
+  editingSessionId.value = null
+  editingTitle.value = ''
+}
+
+async function exportSession(id: string) {
+  const session = sessions.value.find((s) => s.id === id)
+  if (!session) return
+  
+  try {
+    const msgs = await apiJson<MessageRow[]>(`/api/sessions/${id}/messages`)
+    const exportData = {
+      session: session,
+      messages: msgs,
+      exportedAt: new Date().toISOString()
+    }
+    
+    const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `chat-${session.title.replace(/[^a-z0-9]/gi, '-')}-${Date.now()}.json`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  } catch (e) {
+    banner.value = '导出失败'
+  }
+}
+
+function toggleSessionMenu(id: string) {
+  if (showSessionMenu.value === id) {
+    showSessionMenu.value = null
+  } else {
+    showSessionMenu.value = id
+  }
+}
+
 async function selectSession(id: string) {
   activeId.value = id
-  streamPreview.value = ''
-  timelineEvents.value = []
   const msgs = await apiJson<MessageRow[]>(`/api/sessions/${id}/messages`)
   messages.value = msgs
   stickToBottom.value = true
@@ -115,8 +220,6 @@ async function send() {
   banner.value = ''
   input.value = ''
   busy.value = true
-  streamPreview.value = ''
-  timelineEvents.value = []
   stickToBottom.value = true
   const optimistic: MessageRow = {
     id: -Date.now(),
@@ -130,75 +233,124 @@ async function send() {
   await scrollThreadToBottom()
 
   try {
-    const res = await fetch('/api/agent/chat/stream', {
+    const res = await fetch('/api/graph/chat', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Accept: 'text/event-stream',
+        'X-Session-Id': sid,
         Authorization: `Bearer ${auth.token}`,
       },
-      body: JSON.stringify({ sessionId: sid, content: text }),
+      body: JSON.stringify({ message: text, userId: auth.username || 'unknown' }),
     })
     if (res.status === 429) {
-      banner.value = 'Rate limited (429). Please wait a minute.'
+      banner.value = '请求过于频繁（429），请稍后再试。'
       await reloadThread(sid)
       return
     }
     if (!res.ok) {
       const t = await res.text()
-      banner.value = t || `Error ${res.status}`
+      banner.value = t || `错误 ${res.status}`
       await reloadThread(sid)
       return
     }
-    let acc = ''
-    // 后端事件：delta=正文增量；plan_*/tool_*=侧栏；error/done=结束态（与 AgentService 一致）
-    await consumeSse(res, (ev, data) => {
-      if (ev === 'delta' && data && typeof data === 'object' && 'text' in data) {
-        const piece = String((data as { text?: string }).text ?? '')
-        acc += piece
-        streamPreview.value = acc
-        void followIfNeeded()
-      } else if (ev === 'plan_start' && data && typeof data === 'object') {
-        const count = Number((data as { count?: number }).count ?? 0)
-        timelineEvents.value = [
-          ...timelineEvents.value,
-          { type: 'plan_start', text: `plan start (${count} step${count === 1 ? '' : 's'})` },
-        ]
-      } else if (ev === 'plan_step' && data && typeof data === 'object') {
-        const stepIndex = Number((data as { stepIndex?: number }).stepIndex ?? 0)
-        const text = String((data as { text?: string }).text ?? '')
-        timelineEvents.value = [
-          ...timelineEvents.value,
-          { type: 'plan_step', text: `plan #${stepIndex}: ${text}` },
-        ]
-      } else if (ev === 'plan_done') {
-        timelineEvents.value = [...timelineEvents.value, { type: 'plan_done', text: 'plan done' }]
-      } else if (ev === 'tool_start' && data && typeof data === 'object') {
-        const name = String((data as { name?: string }).name ?? 'tool')
-        timelineEvents.value = [...timelineEvents.value, { type: 'tool_start', text: `tool start: ${name}` }]
-      } else if (ev === 'tool_end' && data && typeof data === 'object') {
-        const name = String((data as { name?: string }).name ?? 'tool')
-        timelineEvents.value = [...timelineEvents.value, { type: 'tool_end', text: `tool end: ${name}` }]
-      } else if (ev === 'error') {
-        const msg =
-          data && typeof data === 'object' && 'message' in data
-            ? String((data as { message?: string }).message)
-            : String(data)
-        banner.value = msg
-      }
-    })
-    streamPreview.value = ''
-    await reloadThread(sid)
+    const data = await res.json()
+    if (data.pending) {
+      pendingSessionId.value = sid
+      pendingActionDesc.value = data.pendingAction || ''
+      busy.value = false
+      return
+    }
+    if (data.error) {
+      banner.value = '错误：' + data.error
+      await reloadThread(sid)
+      return
+    }
+    const answer = data.response || ''
+    
+    // 模拟助手回复消息
+    messages.value = [
+      ...messages.value,
+      {
+        id: Date.now(),
+        role: 'ASSISTANT',
+        content: answer,
+        toolCallsJson: null,
+        toolCallId: null,
+        createdAt: new Date().toISOString(),
+      },
+    ]
+    await scrollThreadToBottom()
     await loadSessions()
   } catch (e) {
     if (e instanceof ApiError) {
       banner.value = e.body
     } else {
-      banner.value = 'Request failed'
+      banner.value = '请求失败'
     }
     await reloadThread(sid)
   } finally {
     busy.value = false
+  }
+}
+
+async function approveAction(approved: boolean) {
+  const sid = pendingSessionId.value
+  if (!sid) return
+  const optimistic: MessageRow = {
+    id: -Date.now(),
+    role: 'ASSISTANT',
+    content: pendingActionDesc.value + (approved ? ' [已确认]' : ' [已拒绝]'),
+    toolCallsJson: null,
+    toolCallId: null,
+    createdAt: new Date().toISOString(),
+  }
+  messages.value = [...messages.value, optimistic]
+  pendingSessionId.value = null
+  pendingActionDesc.value = ''
+  banner.value = ''
+  await scrollThreadToBottom()
+
+  try {
+    const res = await fetch('/api/graph/approve', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${auth.token}`,
+      },
+      body: JSON.stringify({ sessionId: sid, approved }),
+    })
+    if (!res.ok) {
+      const t = await res.text()
+      banner.value = '审批失败：' + (t || String(res.status))
+      return
+    }
+    const data = await res.json()
+    if (data.pending) {
+      // 又需要审批（异常情况）
+      pendingSessionId.value = sid
+      pendingActionDesc.value = data.pendingAction || ''
+      return
+    }
+    if (data.error) {
+      banner.value = '错误：' + data.error
+      return
+    }
+    // 追加最终回复
+    messages.value = [
+      ...messages.value,
+      {
+        id: Date.now(),
+        role: 'ASSISTANT',
+        content: data.response || '',
+        toolCallsJson: null,
+        toolCallId: null,
+        createdAt: new Date().toISOString(),
+      },
+    ]
+    await scrollThreadToBottom()
+    await loadSessions()
+  } catch (e) {
+    banner.value = '审批请求失败'
   }
 }
 
@@ -222,11 +374,11 @@ onMounted(async () => {
 function roleLabel(r: MessageRow['role']): string {
   switch (r) {
     case 'USER':
-      return 'You'
+      return '你'
     case 'ASSISTANT':
-      return 'Assistant'
+      return '助手'
     case 'TOOL':
-      return 'Tool'
+      return '工具'
     default:
       return r
   }
@@ -239,59 +391,122 @@ function renderMarkdown(text: string): string {
 </script>
 
 <template>
-  <div class="layout">
-    <aside class="sidebar">
+  <div
+    class="layout"
+    :class="{ 'sidebar-collapsed': !sidebarOpen }"
+  >
+    <div class="sidebar-overlay" :class="{ open: sidebarOpen }" @click="sidebarOpen = false"></div>
+    <aside class="sidebar" :class="{ open: sidebarOpen }">
       <div class="brand">Chat Agent</div>
-      <button class="new-chat" type="button" @click="createSession">+ New chat</button>
+      <button class="new-chat" type="button" @click="createSession">+ 新建对话</button>
+      <div class="search-box">
+        <input 
+          v-model="searchQuery" 
+          type="text" 
+          placeholder="搜索对话..." 
+          class="search-input"
+        />
+      </div>
       <ul class="sessions">
         <li
-          v-for="s in sessions"
+          v-for="s in filteredSessions"
           :key="s.id"
           :class="{ active: s.id === activeId }"
           @click="selectSession(s.id)"
         >
-          {{ s.title }}
+          <div v-if="editingSessionId === s.id" class="session-edit">
+            <input
+              v-model="editingTitle"
+              type="text"
+              class="edit-input"
+              @click.stop
+              @keydown.enter="saveRename"
+              @keydown.esc="cancelRename"
+            />
+            <button class="save-btn" type="button" @click.stop="saveRename">✓</button>
+            <button class="cancel-btn" type="button" @click.stop="cancelRename">✕</button>
+          </div>
+          <template v-else>
+            <span class="session-title">{{ s.title }}</span>
+            <div class="session-actions">
+              <button
+                class="menu-btn-small"
+                type="button"
+                @click.stop="toggleSessionMenu(s.id)"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="12" cy="12" r="1"></circle>
+                  <circle cx="12" cy="5" r="1"></circle>
+                  <circle cx="12" cy="19" r="1"></circle>
+                </svg>
+              </button>
+              <div v-if="showSessionMenu === s.id" class="session-dropdown" @click.stop>
+                <button type="button" @click="renameSession(s.id); showSessionMenu = null">
+                  重命名
+                </button>
+                <button type="button" @click="exportSession(s.id); showSessionMenu = null">
+                  导出
+                </button>
+                <button type="button" @click="deleteSession(s.id); showSessionMenu = null">
+                  删除
+                </button>
+              </div>
+            </div>
+          </template>
         </li>
       </ul>
       <div class="foot">
         <span class="who">{{ auth.username || 'user' }}</span>
-        <button type="button" class="link" @click="logout">Logout</button>
+        <button type="button" class="link" @click="logout">退出登录</button>
       </div>
     </aside>
     <main class="main">
       <header class="top">
-        <h2>{{ title }}</h2>
-        <span v-if="banner" class="banner">{{ banner }}</span>
+        <div class="header-left">
+          <button
+            class="menu-btn"
+            type="button"
+            @click="sidebarOpen = !sidebarOpen"
+            aria-label="打开或关闭会话列表"
+            :aria-expanded="sidebarOpen"
+          >
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="3" y1="6" x2="21" y2="6"></line>
+              <line x1="3" y1="12" x2="21" y2="12"></line>
+              <line x1="3" y1="18" x2="21" y2="18"></line>
+            </svg>
+          </button>
+          <h2>{{ title }}</h2>
+        </div>
+        <div class="header-right">
+          <span v-if="banner" class="banner">{{ banner }}</span>
+          <div v-if="pendingActionDesc" class="approval-panel">
+            <div class="approval-desc">{{ pendingActionDesc }}</div>
+            <div class="approval-actions">
+              <button type="button" class="approve-btn" @click="approveAction(true)">✓ 确认</button>
+              <button type="button" class="reject-btn" @click="approveAction(false)">✕ 拒绝</button>
+            </div>
+          </div>
+        </div>
       </header>
       <div ref="threadEl" class="thread" @scroll="onThreadScroll">
         <div v-for="m in messages" :key="m.id" class="bubble-row" :data-role="m.role.toLowerCase()">
           <div class="meta">{{ roleLabel(m.role) }}</div>
           <div class="bubble" v-html="renderMarkdown(m.content || '')"></div>
         </div>
-        <div v-if="streamPreview" class="bubble-row" data-role="assistant">
-          <div class="meta">Assistant</div>
-          <div class="bubble streaming" v-html="renderMarkdown(streamPreview)"></div>
-        </div>
       </div>
       <div class="composer">
         <textarea
           v-model="input"
           rows="3"
-          placeholder="Message… (try “计算 123*456” or “上海天气”)"
+          placeholder="输入消息…（试试网络连不上、VPN 失败等 IT 问题）"
           @keydown.enter.exact.prevent="send"
         />
         <button type="button" class="send" :disabled="busy || !activeId" @click="send">
-          {{ busy ? '…' : 'Send' }}
+          {{ busy ? '…' : '发送' }}
         </button>
       </div>
     </main>
-    <aside class="tools">
-      <h3>Process</h3>
-      <p v-if="!timelineEvents.length" class="muted">Plan and tool steps appear here during a reply.</p>
-      <ul>
-        <li v-for="(t, i) in timelineEvents" :key="i" :class="`event-${t.type}`">{{ t.text }}</li>
-      </ul>
-    </aside>
   </div>
 </template>
 
@@ -317,6 +532,24 @@ function renderMarkdown(text: string): string {
   font-weight: 700;
   letter-spacing: 0.02em;
 }
+.model-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.model-label {
+  font-size: 0.8rem;
+  opacity: 0.8;
+}
+.model-select {
+  width: 100%;
+  padding: 0.45rem 0.6rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--input-bg);
+  color: var(--text);
+  font-size: 0.85rem;
+}
 .new-chat {
   padding: 0.45rem 0.6rem;
   border-radius: 8px;
@@ -324,6 +557,25 @@ function renderMarkdown(text: string): string {
   background: transparent;
   color: var(--text);
   cursor: pointer;
+}
+
+.search-box {
+  margin-bottom: 0.5rem;
+}
+
+.search-input {
+  width: 100%;
+  padding: 0.5rem 0.6rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--input-bg);
+  color: var(--text);
+  font-size: 0.85rem;
+}
+
+.search-input:focus {
+  outline: none;
+  border-color: rgba(99, 102, 241, 0.5);
 }
 .sessions {
   list-style: none;
@@ -333,11 +585,146 @@ function renderMarkdown(text: string): string {
   overflow: auto;
 }
 .sessions li {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
   padding: 0.5rem 0.55rem;
   border-radius: 8px;
   cursor: pointer;
   font-size: 0.9rem;
   color: var(--muted);
+  position: relative;
+}
+
+.session-edit {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  width: 100%;
+}
+
+.edit-input {
+  flex: 1;
+  padding: 0.3rem 0.4rem;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--input-bg);
+  color: var(--text);
+  font-size: 0.85rem;
+}
+
+.edit-input:focus {
+  outline: none;
+  border-color: rgba(99, 102, 241, 0.5);
+}
+
+.save-btn,
+.cancel-btn {
+  border: none;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 1rem;
+  padding: 0.2rem 0.4rem;
+  border-radius: 4px;
+}
+
+.save-btn:hover {
+  color: #4ade80;
+  background: rgba(74, 222, 128, 0.1);
+}
+
+.cancel-btn:hover {
+  color: #f87171;
+  background: rgba(248, 113, 113, 0.1);
+}
+.session-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.session-delete {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 0.9rem;
+  border-radius: 6px;
+  padding: 0.1rem 0.3rem;
+}
+
+.session-delete:hover {
+  color: #fda4af;
+  background: rgba(248, 113, 113, 0.12);
+}
+
+.session-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.2rem;
+}
+
+.menu-btn-small {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 0.9rem;
+  border-radius: 6px;
+  padding: 0.2rem 0.3rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.menu-btn-small:hover {
+  color: var(--text);
+  background: rgba(99, 102, 241, 0.1);
+}
+
+.session-dropdown {
+  position: absolute;
+  right: 0;
+  top: 100%;
+  margin-top: 0.25rem;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  z-index: 10;
+  min-width: 120px;
+  display: flex;
+  flex-direction: column;
+}
+
+.session-dropdown button {
+  text-align: left;
+  padding: 0.5rem 0.75rem;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 0.85rem;
+  border-radius: 0;
+}
+
+.session-dropdown button:first-child {
+  border-radius: 8px 8px 0 0;
+}
+
+.session-dropdown button:last-child {
+  border-radius: 0 0 8px 8px;
+  color: #f87171;
+}
+
+.session-dropdown button:hover {
+  background: rgba(99, 102, 241, 0.1);
+}
+
+.session-dropdown button:last-child:hover {
+  background: rgba(248, 113, 113, 0.1);
 }
 .sessions li.active {
   background: rgba(99, 102, 241, 0.15);
@@ -368,13 +755,106 @@ function renderMarkdown(text: string): string {
   flex-direction: column;
   gap: 0.35rem;
 }
+
+.header-left,
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.header-right {
+  justify-content: flex-end;
+}
+
+.menu-btn,
+.close-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.5rem;
+  cursor: pointer;
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+}
+
+.btn-secondary {
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 0.5rem 0.75rem;
+  cursor: pointer;
+  font-size: 0.85rem;
+  transition: all 0.2s ease;
+}
+
+.btn-secondary:hover {
+  background: rgba(99, 102, 241, 0.1);
+  border-color: rgba(99, 102, 241, 0.3);
+}
+
+.menu-btn:hover,
+.close-btn:hover {
+  background: rgba(99, 102, 241, 0.1);
+  border-color: rgba(99, 102, 241, 0.3);
+}
+
+.sidebar-overlay {
+  display: none;
+}
+
 .top h2 {
   margin: 0;
   font-size: 1.1rem;
 }
+
+@media (max-width: 960px) {
+  .sidebar-overlay.open {
+    display: block;
+  }
+}
 .banner {
   color: #fbbf24;
   font-size: 0.85rem;
+}
+.approval-panel {
+  background: #1e293b;
+  border: 1px solid #3b82f6;
+  border-radius: 8px;
+  padding: 0.6rem 0.8rem;
+  max-width: 360px;
+}
+.approval-desc {
+  font-size: 0.8rem;
+  color: #e2e8f0;
+  white-space: pre-wrap;
+  margin-bottom: 0.5rem;
+}
+.approval-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+.approve-btn {
+  background: #2563eb;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  padding: 0.3rem 0.8rem;
+  cursor: pointer;
+  font-size: 0.8rem;
+}
+.reject-btn {
+  background: #374151;
+  color: #e2e8f0;
+  border: none;
+  border-radius: 4px;
+  padding: 0.3rem 0.8rem;
+  cursor: pointer;
+  font-size: 0.8rem;
 }
 .thread {
   flex: 1;
@@ -490,47 +970,124 @@ textarea {
   opacity: 0.5;
   cursor: not-allowed;
 }
-.tools {
-  border-left: 1px solid var(--border);
-  padding: 1rem;
-  font-size: 0.8rem;
-  color: var(--muted);
-  background: var(--panel);
-  min-height: 0;
-  overflow: auto;
-}
-.tools h3 {
-  margin: 0 0 0.5rem;
-  font-size: 0.95rem;
-  color: var(--text);
-}
-.tools ul {
-  margin: 0;
-  padding-left: 1rem;
-}
-.tools li {
-  margin: 0.25rem 0;
-}
-.tools li.event-plan_start,
-.tools li.event-plan_done {
-  color: #c4b5fd;
-}
-.tools li.event-plan_step {
-  color: #ddd6fe;
-}
-.tools li.event-tool_start,
-.tools li.event-tool_end {
-  color: #86efac;
-}
 .muted {
   color: var(--muted);
 }
+@media (max-width: 1200px) {
+  .layout {
+    grid-template-columns: 220px 1fr;
+  }
+}
+
+/* 宽屏：汉堡收起左侧栏 */
+@media (min-width: 961px) {
+  .layout.sidebar-collapsed {
+    grid-template-columns: 0 minmax(0, 1fr);
+  }
+
+  .layout.sidebar-collapsed .sidebar {
+    min-width: 0;
+    overflow: hidden;
+    padding-left: 0;
+    padding-right: 0;
+    border-right-color: transparent;
+    opacity: 0;
+    pointer-events: none;
+  }
+}
+
+@media (min-width: 961px) and (max-width: 1200px) {
+  .layout.sidebar-collapsed {
+    grid-template-columns: 0 minmax(0, 1fr);
+  }
+}
+
 @media (max-width: 960px) {
   .layout {
-    grid-template-columns: 200px 1fr;
+    grid-template-columns: 1fr;
+    position: relative;
   }
-  .tools {
+  
+  .sidebar {
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 280px;
+    z-index: 100;
+    transform: translateX(-100%);
+    transition: transform 0.3s ease;
+    border-right: 1px solid var(--border);
+    pointer-events: none;
+  }
+
+  .sidebar.open {
+    transform: translateX(0);
+    pointer-events: auto;
+  }
+  
+  .sidebar-overlay {
     display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 90;
+  }
+  
+  .sidebar-overlay.open {
+    display: block;
+  }
+  
+  .main {
+    width: 100%;
+  }
+  
+  .top {
+    padding: 1rem;
+  }
+  
+  .thread {
+    padding: 1rem;
+  }
+  
+  .composer {
+    padding: 0.75rem 1rem 1rem;
+    flex-direction: column;
+  }
+  
+  .send {
+    width: 100%;
+  }
+  
+  textarea {
+    min-height: 60px;
+  }
+}
+
+@media (max-width: 640px) {
+  .sidebar {
+    width: 100%;
+  }
+  
+  .top h2 {
+    font-size: 1rem;
+  }
+  
+  .bubble-row {
+    max-width: 100%;
+  }
+  
+  .bubble {
+    padding: 0.5rem 0.7rem;
+    font-size: 0.95rem;
+  }
+  
+  .composer {
+    padding: 0.6rem 0.75rem 0.75rem;
+  }
+  
+  textarea {
+    font-size: 16px;
   }
 }
 </style>

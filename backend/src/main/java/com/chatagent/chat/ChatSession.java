@@ -29,6 +29,9 @@ public class ChatSession {
     @Column(nullable = false)
     private String title;
 
+    @Column(length = 128)
+    private String model;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt = Instant.now();
 

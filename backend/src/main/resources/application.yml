@@ -33,6 +33,12 @@ management:
   endpoint:
     health:
       show-details: never
+  tracing:
+    sampling:
+      probability: 1.0
+  otlp:
+    tracing:
+      endpoint: http://111.229.177.132:4318/v1/traces
 
 app:
   jwt:
@@ -40,29 +46,42 @@ app:
     expiration-ms: ${JWT_EXPIRATION_MS:86400000}
   cors:
     allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:5173,http://127.0.0.1:5173}
-  rate-limit:
-    agent-requests-per-minute: ${RATE_LIMIT_AGENT_PER_MINUTE:30}
   admin:
     bootstrap-username: ${ADMIN_BOOTSTRAP_USERNAME:admin}
     bootstrap-password: ${ADMIN_BOOTSTRAP_PASSWORD:admin}
 
 dashscope:
-  api-key: ${DASHSCOPE_API_KEY:}
+  api-key: ${DASHSCOPE_API_KEY:sk-36690807ab8f4a3f84bd816996e645c5}
   base-url: ${DASHSCOPE_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}
-  model: ${DASHSCOPE_MODEL:qwen-plus}
-  connect-timeout-ms: ${DASHSCOPE_CONNECT_TIMEOUT_MS:10000}
-  read-timeout-ms: ${DASHSCOPE_READ_TIMEOUT_MS:120000}
+  model: ${DASHSCOPE_MODEL:qwen3.5-flash}
+  allowed-models:
+    - tongyi-xiaomi-analysis-pro
+    - tongyi-xiaomi-analysis-flash
+    - qwen3.5-122b-a10b
+    - qwen-turbo
+    - qwen3.5-flash
+    - qwen3.5-35b-a3b
+    - qwen3.5-plus
+    - qwen3.5-plus-2026-02-15
+    - qwen3-max-2026-01-23
+    - qwen3.5-27b
+    - glm-5
+  connect-timeout-ms: ${DASHSCOPE_CONNECT_TIMEOUT_MS:5000}
+  read-timeout-ms: ${DASHSCOPE_READ_TIMEOUT_MS:30000}
   max-tokens: ${DASHSCOPE_MAX_TOKENS:4096}
   temperature: ${DASHSCOPE_TEMPERATURE:0.3}
 
-agent:
-  max-steps: ${AGENT_MAX_STEPS:8}
-  max-tool-calls-per-turn: ${AGENT_MAX_TOOL_CALLS_PER_TURN:2}
-  max-tool-calls-total: ${AGENT_MAX_TOOL_CALLS_TOTAL:6}
-  tool-timeout-ms: ${AGENT_TOOL_TIMEOUT_MS:2000}
+it-support:
+  chat-model: ${IT_SUPPORT_CHAT_MODEL:qwen3.5-flash}
+  max-memory-messages: ${IT_SUPPORT_MAX_MEMORY_MESSAGES:20}
+  rag-top-k: ${IT_SUPPORT_RAG_TOP_K:3}
+  semantic-cache-similarity-threshold: ${IT_SUPPORT_CACHE_THRESHOLD:0.5}
+  memory-enabled: ${IT_SUPPORT_MEMORY_ENABLED:true}
+  memory-top-k: ${IT_SUPPORT_MEMORY_TOP_K:5}
+  knowledge-base-path: ${IT_SUPPORT_KB_PATH:/Users/zengchengjie/IdeaProjects/ChatAgent/docs/it-knowledge-base.md}
 
 logging:
   level:
     com.chatagent: INFO
   pattern:
-    console: "%d{ISO8601} %-5level [%thread] traceId=%X{traceId:-} %logger{36} - %msg%n"
+    console: "%d{ISO8601} %-5level [%thread] %logger{36} - %msg%n"

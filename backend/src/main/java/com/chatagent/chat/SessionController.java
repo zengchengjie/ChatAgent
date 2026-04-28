@@ -3,12 +3,17 @@ package com.chatagent.chat;
 import com.chatagent.chat.dto.CreateSessionRequest;
 import com.chatagent.chat.dto.MessageResponse;
 import com.chatagent.chat.dto.SessionResponse;
+import com.chatagent.common.ApiException;
 import com.chatagent.security.JwtPrincipal;
 import com.chatagent.security.SecurityUtils;
 import jakarta.validation.Valid;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -76,7 +81,8 @@ public class SessionController {
     public SessionResponse create(@Valid @RequestBody(required = false) CreateSessionRequest req) {
         JwtPrincipal p = SecurityUtils.requirePrincipal();
         String title = req != null ? req.getTitle() : null;
-        return chatService.createSession(p.userId(), title);
+        String model = req != null ? req.getModel() : null;
+        return chatService.createSession(p.userId(), title, model);
     }
 
     /**
@@ -118,5 +124,19 @@ public class SessionController {
     public List<MessageResponse> messages(@PathVariable String sessionId) {
         JwtPrincipal p = SecurityUtils.requirePrincipal();
         return chatService.listMessages(p.userId(), sessionId);
+    }
+
+    @DeleteMapping("/{sessionId}")
+    public ResponseEntity<Void> delete(@PathVariable String sessionId) {
+        JwtPrincipal p = SecurityUtils.requirePrincipal();
+        chatService.deleteSession(p.userId(), sessionId);
+        return ResponseEntity.noContent().build();
+    }
+
+    @PatchMapping("/{sessionId}")
+    public SessionResponse updateTitle(@PathVariable String sessionId, @RequestBody CreateSessionRequest req) {
+        JwtPrincipal p = SecurityUtils.requirePrincipal();
+        String title = req != null ? req.getTitle() : null;
+        return chatService.updateSessionTitle(p.userId(), sessionId, title);
     }
 }
