@@ -1,62 +1,77 @@
-# ChatAgent（Java Agent MVP）
+# ChatAgent — 企业 IT 智能助手
 
-面向面试演示的 **多轮对话 + 工具调用闭环 + SSE** 全栈示例，后端 **Spring Boot 3 / Java 17**，默认对接 **阿里云 DashScope 通义千问（OpenAI 兼容模式）**，持久化 **SQLite**，限流 **Redis**。  
-当前支持双引擎：
+企业级 IT 支持助手，基于 **Spring Boot 3 / Java 17** + **Vue 3** + **LangChain4j**，对接 **阿里云 DashScope（通义千问）**，数据持久化 **SQLite**，缓存与限流 **Redis**，链路追踪 **OpenTelemetry + Jaeger**。
 
-- `langchain4j`（默认，学习优先）
-- `self`（保留自研编排实现）
+## 核心功能
 
-需求与阶段划分见 [AGENT_PROJECT_SPEC.md](AGENT_PROJECT_SPEC.md)；**Agent 开发流程、数据流与扩展工具步骤**见 [AGENT_DEVELOPMENT_GUIDE.md](AGENT_DEVELOPMENT_GUIDE.md)；迁移说明见 [MIGRATION_TO_LANGCHAIN4J.md](MIGRATION_TO_LANGCHAIN4J.md)。
+- **多轮对话**：基于 LangChain4j 的 `MessageWindowChatMemory` 实现上下文记忆
+- **RAG 知识库检索**：Markdown 文档 → 向量 Embedding → Redis 存储 → 语义检索
+- **语义缓存**：相似问题命中缓存，直接返回，省 API 调用
+- **用户长期记忆**：向量存储用户个人信息、偏好、知识，跨会话复用
+- **模型路由与健康检查**：DashScope / Ollama 双模型自动切换，单模型故障时无缝降级
+- **Graph Agent（备选）**：langgraph4j 实现 Human-in-the-loop 工单审批流
+- **SSE 流式响应**：实时推送 Agent 思考过程与工具调用状态
 
 ## 架构
 
 ```mermaid
 flowchart LR
-  Browser --> Nginx
-  Nginx --> Static["Vue dist"]
-  Nginx --> Boot["Spring Boot"]
-  Boot --> Redis
-  Boot --> SQLite
-  Boot --> DashScope["DashScope API"]
+  Browser -->|HTTP/SSE| SpringBoot
+  SpringBoot -->|Embedding| Redis
+  SpringBoot -->|SQL| SQLite
+  SpringBoot -->|Chat| DashScope
+  SpringBoot -->|Embedding| DashScope
 ```
 
-## Agent 主循环（后端）
+## 技术栈
 
-1. `AgentController` 将请求交给 `AgentEngineRouter`。  
-2. Router 根据 `APP_AGENT_ENGINE` 选择 `langchain4j` 或 `self` 引擎。  
-3. 引擎执行对话与工具调用，统一输出 SSE/JSON。  
-4. 关键护栏（最大工具调用、超时）与日志（`traceId`、`event=agent_summary`）保持可观测。
+| 层级 | 技术 |
+|------|------|
+| 后端框架 | Spring Boot 3.3 / Java 17 |
+| AI 框架 | LangChain4j（默认）、langgraph4j（Graph 引擎） |
+| 大模型 | 阿里云 DashScope（通义千问 OpenAI 兼容模式） |
+| 向量存储 | Redis（ReJSON-RL） |
+| 关系存储 | SQLite + Flyway |
+| 前端 | Vue 3 + Vite + Pinia + TypeScript |
+| 链路追踪 | OpenTelemetry + Jaeger |
 
 ## 目录
 
 | 路径 | 说明 |
 |------|------|
-| [AGENT_DEVELOPMENT_GUIDE.md](AGENT_DEVELOPMENT_GUIDE.md) | Agent 流程、数据流、OpenAI 消息格式、加工具、调试 |
-| [MIGRATION_TO_LANGCHAIN4J.md](MIGRATION_TO_LANGCHAIN4J.md) | 迁移映射、配置变化、回滚方案 |
-| [LEARNING_PATH_LANGCHAIN4J.md](LEARNING_PATH_LANGCHAIN4J.md) | 2小时/1天/3天学习路径 |
-| [backend/](backend/) | Spring Boot API、Flyway、Agent、限流 |
-| [frontend/](frontend/) | Vue 3 + Vite + Pinia，开发时代理 `/api` |
-| [docker-compose.yml](docker-compose.yml) | 仅 Redis |
-| [deploy/nginx.example.conf](deploy/nginx.example.conf) | Nginx 反代 + 静态资源 + SSE 相关超时 |
-| [.env.example](.env.example) | 环境变量模板（勿提交真实 Key） |
+| [backend/src/main/java/com/chatagent/it/](backend/src/main/java/com/chatagent/it/) | IT 支持助手核心代码 |
+| [backend/src/main/java/com/chatagent/it/model/](backend/src/main/java/com/chatagent/it/model/) | 模型路由与健康检查 |
+| [backend/src/main/java/com/chatagent/it/graph/](backend/src/main/java/com/chatagent/it/graph/) | Graph Agent（工单审批流） |
+| [backend/src/main/resources/](backend/src/main/resources/) | 配置与数据库迁移 |
+| [frontend/](frontend/) | Vue 3 前端 |
+| [docs/it-knowledge-base.md](docs/it-knowledge-base.md) | IT 知识库 Markdown |
+| [deploy/](deploy/) | 部署配置（Nginx 等） |
 
 ## 本地运行
 
-1. **Redis**：`docker compose up -d`  
-2. **环境变量**：复制 `.env.example`，设置至少 `DASHSCOPE_API_KEY`、`JWT_SECRET`（开发可用默认值但生产必须更换）。  
-3. **后端**（需 Java 17+）：
+### 1. 启动 Redis
+
+```bash
+docker compose up -d
+```
+
+### 2. 配置环境变量
+
+```bash
+cp .env.example .env
+# 编辑 .env，填写 DASHSCOPE_API_KEY
+```
+
+### 3. 启动后端（Java 17+）
 
 ```bash
 cd backend
-export DASHSCOPE_API_KEY=sk-xxxx
-export JWT_SECRET=dev-secret-change-in-production-min-256-bits-please-use-long-random-string
-export APP_AGENT_ENGINE=langchain4j
 mvn spring-boot:run
 ```
 
-首次启动会创建默认用户 **`admin` / `admin`**（仅当库中不存在该用户名，密码可通过 `ADMIN_BOOTSTRAP_*` 覆盖）。
+首次启动自动创建默认管理员：`admin` / `admin`
 
-4. **前端**：
+### 4. 启动前端
 
 ```bash
 cd frontend
@@ -64,75 +79,69 @@ npm install
 npm run dev
 ```
 
-浏览器访问 `http://localhost:5173`，登录后新建会话即可对话。演示工具调用可尝试：**「计算 123*456」**（`calculator`）、**「上海天气」**（`get_mock_weather`，内置城市白名单）。
+访问 `http://localhost:5173`，登录后新建会话即可对话。
 
-## 腾讯云单机部署（摘要）
+### 演示工具调用
 
-1. 安装 **JDK 17**、**Redis**（本机或腾讯云 Redis）、可选 **Nginx**。  
-2. `cd frontend && npm run build`，将 `frontend/dist` 部署到 Nginx `root`。  
-3. `cd backend && mvn -DskipTests package`，用 `systemd` 运行 JAR，通过 `EnvironmentFile` 注入 `.env` 中变量（**不要**把密钥写进仓库）。  
-4. SQLite 文件路径建议 `SQLITE_PATH=/var/lib/chatagent/chatagent.db`，目录需可写并纳入备份。  
-5. Nginx：参考 [deploy/nginx.example.conf](deploy/nginx.example.conf)，注意 **`proxy_buffering off`** 与较大的 **`proxy_read_timeout`** 以适配 SSE。  
-6. 生产请配置 **HTTPS**、收紧 **CORS**（`CORS_ALLOWED_ORIGINS`）、更换 **JWT_SECRET** 与默认管理员密码。
+登录后尝试以下问题：
+- **「VPN 连不上了」** → 触发 RAG 知识库检索
+- **「帮我创个工单」** → 触发 `generateTicket` 工具
+- **「我叫张三，用 MacBook」** → 触发 `saveMemory` 保存用户记忆
 
 ## 主要 API
 
-- `POST /api/auth/login` / `POST /api/auth/logout`  
-- `GET /api/health`  
-- `POST /api/sessions`、`GET /api/sessions`、`GET /api/sessions/{id}/messages`  
-- `POST /api/agent/chat` — JSON 回复，含 `steps`（工具摘要）  
-- `POST /api/agent/chat/stream` — `text/event-stream`，事件：`plan_start`、`plan_step`、`plan_done`、`tool_start`、`tool_end`、`guardrail`、`delta`、`error`、`done`  
+| 接口 | 说明 |
+|------|------|
+| `POST /api/auth/login` | 登录 |
+| `POST /api/chat` | IT 支持助手对话（默认 LangChain4j 引擎） |
+| `POST /api/graph/chat` | Graph Agent 对话入口 |
+| `POST /api/graph/approve` | 人工审批工单 |
+| `GET /api/it-support/models/status` | 模型健康状态 |
+| `POST /api/it-support/models/health-check` | 触发模型健康检查 |
+| `GET /api/health` | 健康检查 |
+| `GET /actuator/prometheus` | Prometheus 监控指标 |
 
-Agent 相关接口受 **Redis 滑动窗口限流**（按用户、每分钟），超限 **HTTP 429**。
+限流：Agent 接口按用户 IP 滑动窗口限流（默认每分钟上限），超限返回 **HTTP 429**。
 
-## 审计与护栏增强（新增）
+## 可观测性
 
-- self / langchain4j 两个引擎统一接入运行审计模型（`rounds/toolCalls/ragCalls/maxStepsHit`）用于 `event=agent_summary`。
-- 新增每工具独立护栏：`agent.max-tool-calls-per-tool`（默认 `3`），防止单工具被重复刷调用。
-- 新增 Prometheus 指标：
-  - `chatagent.tool.calls{engine,tool}`
-  - `chatagent.guardrail.hit{engine,reason}`
-  - `chatagent.agent.summary{engine}`
-- 监控端点：`/actuator/prometheus`（已默认暴露）。
+- **链路追踪**：所有 LLM 调用、工具调用、RAG 检索均通过 OpenTelemetry + Jaeger 追踪
+- **Prometheus 指标**：
+  - `chatagent.tool.calls{engine,tool}` — 工具调用次数
+  - `chatagent.guardrail.hit{engine,reason}` — 护栏触发
+  - `chatagent.agent.summary{engine}` — Agent 执行摘要
+- **审计日志**：每次对话输出 `event=agent_summary`，包含 rounds / toolCalls / ragCalls / maxStepsHit
 
-## IDE 依赖误报处理（LangChain4j）
+## 配置参考
 
-如 IDE 暂时提示 `langchain4j` 相关符号无法解析，但 `mvn compile` 正常，按以下顺序处理：
+关键环境变量（详见 `.env.example`）：
 
-1. Maven 面板执行 **Reimport All Maven Projects**  
-2. 仍异常时执行 **Invalidate Caches / Restart**  
-3. 终端复核：`cd backend && mvn -DskipTests compile`
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `DASHSCOPE_API_KEY` | — | 必填，阿里云 DashScope API Key |
+| `DASHSCOPE_MODEL` | `qwen3.5-flash` | Chat 模型 |
+| `REDIS_HOST` | `111.229.177.132` | Redis 地址 |
+| `IT_SUPPORT_RAG_TOP_K` | `3` | RAG 返回条数 |
+| `IT_SUPPORT_CACHE_THRESHOLD` | `0.5` | 语义缓存相似度阈值 |
+| `IT_SUPPORT_MEMORY_ENABLED` | `true` | 是否启用用户长期记忆 |
 
-## 换模型
+## 生产部署摘要
 
-设置环境变量 **`DASHSCOPE_MODEL`**（如 `qwen-plus`、`qwen-turbo` 等），并查阅当前模型在 **compatible-mode** 下对 **tools** 的支持情况。
-
-## 最小验证命令
-
-```bash
-# 1) 编译/测试
-cd backend
-mvn -DskipTests compile
-mvn test
-
-# 2) 三个验证脚本（需先拿 TOKEN 与 SESSION_ID）
-TOKEN=... SESSION_ID=... ./scripts/verify_planning_stream.sh
-TOKEN=... SESSION_ID=... ./scripts/verify_rag_nohit.sh
-TOKEN=... SESSION_ID=... ./scripts/verify_guardrail.sh
-```
-
-脚本结果说明：
-
-- `verify_planning_stream.sh`：需要看到 plan 事件 + 至少 2 次工具调用
-- `verify_rag_nohit.sh`：需要看到 `search_knowledge` 返回 `hit=false` 且 `chunks=[]`
-- `verify_guardrail.sh`：需要看到 `guardrail` 事件且流式能结束（不无限循环）
+1. **JDK 17**、**Redis**（推荐腾讯云 Redis）、可选 **Nginx**
+2. `cd frontend && npm run build`，将 `dist` 部署到 Nginx `root`
+3. `cd backend && mvn -DskipTests package`，用 `systemd` 运行 JAR，通过 `EnvironmentFile` 注入环境变量
+4. SQLite 路径建议 `/var/lib/chatagent/chatagent.db`，纳入备份
+5. Nginx 参考 [deploy/nginx.example.conf](deploy/nginx.example.conf)，注意 **`proxy_buffering off`** 与较大的 **`proxy_read_timeout`**（适配 SSE）
+6. 配置 **HTTPS**、收紧 **CORS**、更换 **JWT_SECRET** 与默认管理员密码
 
 ## 面试可讲点
 
-- **Agent 循环**：何时结束、如何避免死循环（`maxSteps`）、工具结果如何回灌上下文。  
-- **安全**：JWT、工具白名单、入参校验（表达式字符集、城市白名单）、密钥只走环境变量。  
-- **可观测性**：日志中 `traceId`（MDC）、`event=llm_call` / `event=tool_call` 与耗时字段。  
-- **演进**：SQLite 并发与扩展限制 → 可平滑换 **MySQL**；限流内存黑名单 → 多实例可迁 **Redis**；RAG / 人工确认见 spec Phase 2。
+- **Agent 循环**：何时结束、如何避免死循环（`maxSteps`）、工具结果如何回灌上下文
+- **RAG**：Embedding 模型选型、向量分割策略、Redis 向量存储、相似度过滤
+- **安全**：JWT、工具白名单、表达式字符集校验、密钥只走环境变量
+- **可观测性**：OpenTelemetry Span + Jaeger 追踪、MDC traceId、Prometheus metrics
+- **降级与容错**：模型健康检查、Ollama 本地降级、语义缓存加速
+- **演进**：SQLite → MySQL、Redis 限流多实例共享、Graph Agent 审批流
 
 ## 许可
 
