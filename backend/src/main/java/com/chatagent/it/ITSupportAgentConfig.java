@@ -29,20 +29,16 @@ public class ITSupportAgentConfig {
 
     @Bean
     EmbeddingModel itSupportEmbeddingModel(DashScopeProperties properties) {
-        // Try different configurations for DashScope embedding
-        // DashScope embedding might require different endpoint or parameters
+        // DashScope OpenAI 兼容模式同时支持 chat 和 embedding
+        // Embedding endpoint: {baseUrl}/embeddings
         String baseUrl = properties.getBaseUrl();
-        // If using compatible mode, embedding endpoint might be different
-        if (baseUrl.contains("/compatible-mode/v1")) {
-            baseUrl = baseUrl.replace("/compatible-mode/v1", "/v1");
-        }
 
         return OpenAiEmbeddingModel.builder()
                 .apiKey(properties.getApiKey())
                 .baseUrl(baseUrl)
                 .modelName("text-embedding-v2")
-                .timeout(Duration.ofMillis(3000))
-                .maxRetries(1)
+                .timeout(Duration.ofMillis(10000))
+                .maxRetries(2)
                 .customHeaders(Map.of(
                     "X-DashScope-Version", "2024-01-01",
                     "Authorization", "Bearer " + properties.getApiKey()

@@ -79,7 +79,7 @@ public class ITSupportGraphService {
                 // 中断：等待用户审批，先把用户消息持久化
                 pendingContexts.put(sessionId, new PendingContext(pendingAction, new ConcurrentHashMap<>(state.data())));
                 span.setAttribute("result.pending", true);
-                persistMessage(sessionId, message, null);
+                persistMessage(sessionId, userId, message, null);
                 return GraphResult.pending(pendingAction);
             }
 
@@ -91,7 +91,7 @@ public class ITSupportGraphService {
             span.setAttribute("result.pending", false);
 
             // 持久化消息到数据库
-            persistMessage(sessionId, message, finalResponse);
+            persistMessage(sessionId, userId, message, finalResponse);
 
             return GraphResult.ok(finalResponse);
 
@@ -128,7 +128,7 @@ public class ITSupportGraphService {
                 String toolResult = executeToolDirect(toolName, toolInput, userId);
                 span.setAttribute("tool.result", toolResult);
                 pendingContexts.remove(sessionId);
-                persistMessage(sessionId, null, toolResult);
+                persistMessage(sessionId, userId, null, toolResult);
                 return GraphResult.ok(toolResult);
             } else {
                 pendingContexts.remove(sessionId);
@@ -205,14 +205,21 @@ public class ITSupportGraphService {
         return endsWithQuestionMark || containsQuestionWord;
     }
 
-    private void persistMessage(String sessionId, String userMessage, String assistantMessage) {
+    private void persistMessage(String sessionId, String userId, String userMessage, String assistantMessage) {
         try {
-            Long userId = SecurityUtils.requirePrincipal().userId();
+            // 尝试从安全上下文获取 userId，若未认证则使用传入的 userId
+            Long principalUserId;
+            try {
+                principalUserId = SecurityUtils.requirePrincipal().userId();
+            } catch (Exception e) {
+                principalUserId = null;
+            }
+            Long effectiveUserId = principalUserId != null ? principalUserId : Long.valueOf(userId.hashCode());
             if (userMessage != null) {
-                chatService.appendMessage(userId, sessionId, MessageRole.USER, userMessage, null, null);
+                chatService.appendMessage(effectiveUserId, sessionId, MessageRole.USER, userMessage, null, null);
             }
             if (assistantMessage != null) {
-                chatService.appendMessage(userId, sessionId, MessageRole.ASSISTANT, assistantMessage, null, null);
+                chatService.appendMessage(effectiveUserId, sessionId, MessageRole.ASSISTANT, assistantMessage, null, null);
             }
         } catch (Exception e) {
             log.warn("Failed to persist graph messages for sessionId={}", sessionId, e);

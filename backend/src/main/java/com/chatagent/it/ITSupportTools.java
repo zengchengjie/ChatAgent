@@ -17,35 +17,9 @@ public class ITSupportTools {
     private final AtomicInteger ticketCounter = new AtomicInteger(1);
 
     @Tool(
-            name = "diagnoseNetwork",
-            value =
-                    "网络诊断工具：针对 Wi-Fi、VPN、有线连接等返回排查步骤。用户提到连不上、网络错误、VPN 失败等情况时调用。")
-    public String diagnoseNetwork(String issueDescription) {
-        String issue = issueDescription == null ? "" : issueDescription.toLowerCase();
-        if (issue.contains("vpn")) {
-            return "建议：1. 检查公司账号/密码是否过期；2. 退出 VPN 客户端后重新连接；3. 更换网络环境后重试。";
-        }
-        if (issue.contains("wifi")
-                || issue.contains("wi-fi")
-                || issue.contains("无线")
-                || issue.contains("wlan")) {
-            return "建议：1. 忘记网络后重新连接；2. 重启路由器；3. 检查并更新网卡驱动。";
-        }
-        if (issue.contains("wired")
-                || issue.contains("ethernet")
-                || issue.contains("cable")
-                || issue.contains("有线")
-                || issue.contains("网线")
-                || issue.contains("以太网")) {
-            return "建议：1. 检查网线是否插牢；2. 更换网线或交换机端口；3. 在系统中重置网络适配器。";
-        }
-        return "建议：1. 禁用再启用网络适配器；2. 运行系统网络诊断；3. 若仍无法解决请提交工单。";
-    }
-
-    @Tool(
             name = "searchKnowledgeBase",
             value =
-                    "知识库检索（RAG）：涉及公司 IT 流程、内部经验或非标准操作时必须先调用。用户问「怎么做」「谁负责」「内部流程」等，应优先调用本工具。")
+                    "知识库检索（RAG）：涉及公司 IT 流程、VPN/网络问题、内部经验或非标准操作时必须调用。用户问「怎么做」「谁负责」「内部流程」「连不上」等，应优先调用本工具。")
     public String searchKnowledgeBase(String query) {
         String result = ragService.search(query == null ? "" : query);
         System.out.println("=== RAG Result ===");

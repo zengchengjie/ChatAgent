@@ -90,6 +90,7 @@ public class KnowledgeBaseRagService {
                 var searchRequest = EmbeddingSearchRequest.builder()
                         .queryEmbedding(queryEmbedding)
                         .maxResults(properties.getRagTopK())
+                        .minScore(properties.getRagMinScore())
                         .build();
                 matches = embeddingStore.search(searchRequest).matches();
             } catch (Exception e) {
@@ -125,9 +126,11 @@ public class KnowledgeBaseRagService {
         List<String> chunks = new ArrayList<>();
         for (String part : parts) {
             String chunk = part.trim();
-            if (!chunk.isBlank()) {
-                chunks.add(chunk);
+            // 跳过空白或只有标题的 chunk（如 "# 公司 IT 常见问题"）
+            if (chunk.isBlank() || chunk.split("\n").length < 2) {
+                continue;
             }
+            chunks.add(chunk);
         }
         return chunks.isEmpty() ? List.of(normalized) : chunks;
     }

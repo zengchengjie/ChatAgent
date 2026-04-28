@@ -2,21 +2,16 @@ package com.chatagent.it.model;
 
 import dev.langchain4j.data.message.UserMessage;
 import dev.langchain4j.model.chat.ChatLanguageModel;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
-import org.springframework.context.annotation.Lazy;
 
-import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * 模型健康检查服务：定期检查模型可用性，实现自动降级和恢复
+ * 模型健康检查服务：定期检查 DashScope 模型可用性
  */
 @Service
 @Slf4j
@@ -24,36 +19,44 @@ public class ModelHealthCheckService {
 
     private final ModelRouterService modelRouterService;
 
-    // 健康检查状态
-    private final Map<ModelRouterService.ModelType, HealthStatus> healthStatus = new ConcurrentHashMap<>();
-
-    // 失败计数
-    private final Map<ModelRouterService.ModelType, AtomicInteger> failureCounts = new ConcurrentHashMap<>();
+    // 健康状态
+    private volatile boolean healthy = true;
+    private volatile LocalDateTime lastCheckTime = LocalDateTime.now();
+    private volatile String lastReason = "Initialized";
+    private final AtomicInteger failureCount = new AtomicInteger(0);
 
     // 配置
     private static final int MAX_CONSECUTIVE_FAILURES = 3;
-    private static final long RECOVERY_CHECK_INTERVAL_MS = 30000; // 30秒
     private static final String HEALTH_CHECK_PROMPT = "请回复'OK'";
 
-    public ModelHealthCheckService(@Lazy ModelRouterService modelRouterService) {
+    public ModelHealthCheckService(ModelRouterService modelRouterService) {
         this.modelRouterService = modelRouterService;
-
-        // 初始化状态
-        for (ModelRouterService.ModelType type : ModelRouterService.ModelType.values()) {
-            healthStatus.put(type, new HealthStatus(true, LocalDateTime.now(), "Initialized"));
-            failureCounts.put(type, new AtomicInteger(0));
-        }
     }
 
     /**
      * 定时健康检查（每5分钟执行一次）
      */
-    @Scheduled(fixedDelay = 300000) // 5分钟
+    @Scheduled(fixedDelay = 300000)
     public void scheduledHealthCheck() {
-        log.debug("Starting scheduled health check for all models");
+        log.debug("Starting scheduled health check for DashScope");
 
-        for (ModelRouterService.ModelType type : ModelRouterService.ModelType.values()) {
-            checkModelHealth(type);
+        try {
+            ChatLanguageModel model = modelRouterService.getModel();
+            long startTime = System.currentTimeMillis();
+            String response = model.generate(List.of(UserMessage.from(HEALTH_CHECK_PROMPT))).content().text();
+            long elapsed = System.currentTimeMillis() - startTime;
+
+            if (response != null && !response.isBlank()) {
+                log.debug("DashScope health check passed in {}ms", elapsed);
+                setHealthy("Health check passed in " + elapsed + "ms");
+                recordSuccess();
+            } else {
+                log.warn("DashScope health check returned empty response");
+                recordFailure("Empty response from health check");
+            }
+        } catch (Exception e) {
+            log.error("DashScope health check failed: {}", e.getMessage());
+            recordFailure("Health check exception: " + e.getMessage());
         }
 
         logStatus();
@@ -62,138 +65,69 @@ public class ModelHealthCheckService {
     /**
      * 手动触发健康检查
      */
-    public void triggerHealthCheck(ModelRouterService.ModelType type) {
-        log.info("Manual health check triggered for model: {}", type);
-        checkModelHealth(type);
+    public void triggerHealthCheck() {
+        log.info("Manual health check triggered for DashScope");
+        scheduledHealthCheck();
     }
 
     /**
      * 记录模型使用失败
      */
-    public void recordFailure(ModelRouterService.ModelType type, String errorMessage) {
-        AtomicInteger count = failureCounts.get(type);
-        int failures = count.incrementAndGet();
+    public void recordFailure(String errorMessage) {
+        int failures = failureCount.incrementAndGet();
+        log.warn("DashScope failure recorded (count: {}): {}", failures, errorMessage);
 
-        log.warn("Model {} failure recorded (count: {}): {}", type, failures, errorMessage);
-
-        // 如果连续失败次数超过阈值，标记为不健康
         if (failures >= MAX_CONSECUTIVE_FAILURES) {
-            setUnhealthy(type, "Exceeded max consecutive failures: " + failures);
-            count.set(0); // 重置计数
+            setUnhealthy("Exceeded max consecutive failures: " + failures);
+            failureCount.set(0);
         }
-
-        // 更新健康状态
-        HealthStatus status = healthStatus.get(type);
-        healthStatus.put(type, new HealthStatus(
-            status.healthy(),
-            status.lastCheckTime(),
-            "Last error: " + errorMessage
-        ));
     }
 
     /**
      * 记录模型使用成功
      */
-    public void recordSuccess(ModelRouterService.ModelType type) {
-        failureCounts.get(type).set(0); // 重置失败计数
-
-        // 如果之前不健康，检查是否应该恢复
-        HealthStatus status = healthStatus.get(type);
-        if (!status.healthy()) {
-            log.info("Model {} succeeded after being unhealthy, considering recovery", type);
-            // 成功一次就恢复（或者可以要求连续成功多次）
-            setHealthy(type, "Recovered after success");
+    public void recordSuccess() {
+        failureCount.set(0);
+        if (!healthy) {
+            log.info("DashScope succeeded after being unhealthy, recovering");
+            setHealthy("Recovered after success");
         }
     }
 
     /**
-     * 获取模型健康状态
+     * 获取模型是否健康
      */
-    public boolean isHealthy(ModelRouterService.ModelType type) {
-        HealthStatus status = healthStatus.get(type);
-        return status != null && status.healthy();
+    public boolean isHealthy() {
+        return healthy;
     }
 
     /**
-     * 获取所有模型健康状态
+     * 获取健康状态详情
      */
-    public Map<ModelRouterService.ModelType, HealthStatus> getAllHealthStatus() {
-        return Map.copyOf(healthStatus);
-    }
-
-    /**
-     * 强制设置模型健康状态
-     */
-    public void setModelHealth(ModelRouterService.ModelType type, boolean healthy, String reason) {
-        if (healthy) {
-            setHealthy(type, reason);
-        } else {
-            setUnhealthy(type, reason);
-        }
+    public HealthStatus getHealthStatus() {
+        return new HealthStatus(healthy, lastCheckTime, lastReason);
     }
 
     // ========== 私有方法 ==========
 
-    private void checkModelHealth(ModelRouterService.ModelType type) {
-        log.debug("Checking health for model: {}", type);
-
-        try {
-            // 获取模型实例
-            ChatLanguageModel model = modelRouterService.getModel(type);
-
-            // 发送简单的健康检查请求
-            long startTime = System.currentTimeMillis();
-            String response = model.generate(List.of(UserMessage.from(HEALTH_CHECK_PROMPT))).content().text();
-            long elapsed = System.currentTimeMillis() - startTime;
-
-            // 检查响应是否有效
-            boolean healthy = response != null && !response.isBlank();
-
-            if (healthy) {
-                log.debug("Model {} health check passed in {}ms", type, elapsed);
-                setHealthy(type, "Health check passed in " + elapsed + "ms");
-                recordSuccess(type);
-            } else {
-                log.warn("Model {} health check returned empty response", type);
-                recordFailure(type, "Empty response from health check");
-            }
-
-        } catch (Exception e) {
-            log.error("Model {} health check failed: {}", type, e.getMessage());
-            recordFailure(type, "Health check exception: " + e.getMessage());
-        }
+    private synchronized void setHealthy(String reason) {
+        healthy = true;
+        lastCheckTime = LocalDateTime.now();
+        lastReason = reason;
+        log.info("DashScope marked as HEALTHY: {}", reason);
     }
 
-    private void setHealthy(ModelRouterService.ModelType type, String reason) {
-        HealthStatus newStatus = new HealthStatus(true, LocalDateTime.now(), reason);
-        healthStatus.put(type, newStatus);
-        modelRouterService.updateModelHealthCache(type, true);
-        log.info("Model {} marked as HEALTHY: {}", type, reason);
-    }
-
-    private void setUnhealthy(ModelRouterService.ModelType type, String reason) {
-        HealthStatus newStatus = new HealthStatus(false, LocalDateTime.now(), reason);
-        healthStatus.put(type, newStatus);
-        modelRouterService.updateModelHealthCache(type, false);
-        log.warn("Model {} marked as UNHEALTHY: {}", type, reason);
+    private synchronized void setUnhealthy(String reason) {
+        healthy = false;
+        lastCheckTime = LocalDateTime.now();
+        lastReason = reason;
+        log.warn("DashScope marked as UNHEALTHY: {}", reason);
     }
 
     private void logStatus() {
-        if (log.isInfoEnabled()) {
-            StringBuilder sb = new StringBuilder("Model health status:\n");
-            for (Map.Entry<ModelRouterService.ModelType, HealthStatus> entry : healthStatus.entrySet()) {
-                HealthStatus status = entry.getValue();
-                sb.append(String.format("  %s: %s (last check: %s, reason: %s)%n",
-                    entry.getKey(),
-                    status.healthy() ? "HEALTHY" : "UNHEALTHY",
-                    status.lastCheckTime(),
-                    status.reason()));
-            }
-            log.info(sb.toString());
-        }
+        log.info("DashScope health status: {} (reason: {})",
+            healthy ? "HEALTHY" : "UNHEALTHY", lastReason);
     }
-
-    // ========== 记录类 ==========
 
     public record HealthStatus(
         boolean healthy,

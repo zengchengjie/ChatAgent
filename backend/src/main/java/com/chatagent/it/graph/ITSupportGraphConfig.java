@@ -3,19 +3,14 @@ package com.chatagent.it.graph;
 import static org.bsc.langgraph4j.StateGraph.END;
 import static org.bsc.langgraph4j.StateGraph.START;
 
-import com.chatagent.config.DashScopeProperties;
-import com.chatagent.config.OllamaProperties;
 import com.chatagent.it.ITSupportTools;
 import com.chatagent.it.model.HybridModelService;
+import com.chatagent.it.model.ModelRouterService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import dev.langchain4j.data.message.UserMessage;
-import dev.langchain4j.model.chat.ChatLanguageModel;
-import dev.langchain4j.model.openai.OpenAiChatModel;
 import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.Tracer;
 import io.opentelemetry.context.Scope;
-import java.time.Duration;
 import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -30,7 +25,6 @@ import org.bsc.langgraph4j.GraphStateException;
 import org.bsc.langgraph4j.checkpoint.MemorySaver;
 import org.bsc.langgraph4j.state.Channel;
 import org.bsc.langgraph4j.state.Channels;
-import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -49,7 +43,7 @@ public class ITSupportGraphConfig {
     @Value("${spring.data.redis.password:}")
     private String redisPassword;
 
-    public static final String GRAPH_LLM_MODEL = "qwen-turbo";
+    public static final String GRAPH_LLM_MODEL = "qwen3.5-flash";
     public static final String CHANNEL_MESSAGES = "messages";
     public static final String CHANNEL_PENDING_ACTION = "pendingAction";
     public static final String CHANNEL_APPROVED = "approved";
@@ -66,41 +60,20 @@ public class ITSupportGraphConfig {
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final Pattern jsonPattern = Pattern.compile("\\{[\\s\\S]*\\}", Pattern.MULTILINE);
 
+    // 预处理：纯问候语/闲聊/身份询问等（绕过 LLM 路由，直接回复）
+    private static final Pattern GREETING_PATTERN = Pattern.compile(
+        "^(你好|您好|嗨|hi|hello|hey|早上好|上午好|中午好|下午好|晚上好|谢谢|感谢|多谢|辛苦了|再见|拜拜|bye|good\\s*morning|good\\s*afternoon|good\\s*evening|你是谁|你叫什么|你叫什么名字|你能做什么|你有什么功能|你会什么|你会做什么|在吗|在不在|好的谢谢|好的|好吧|ok|okay)[!！。.？?，,\\s]*$",
+        Pattern.CASE_INSENSITIVE
+    );
+
+    private boolean isPureGreeting(String message) {
+        if (message == null || message.isBlank()) return false;
+        return GREETING_PATTERN.matcher(message.trim()).matches();
+    }
+
     public ITSupportGraphConfig(Tracer tracer, HybridModelService hybridModelService) {
         this.tracer = tracer;
         this.hybridModelService = hybridModelService;
-    }
-
-    /** Router 专用的小模型（本地 Ollama），用于路由决策 */
-    @Bean
-    @Qualifier("ollamaChatModel")
-    ChatLanguageModel ollamaChatModel(OllamaProperties ollama) {
-        return OpenAiChatModel.builder()
-                .apiKey("ollama")  // Ollama 不需要真实 API key
-                .baseUrl(ollama.getBaseUrl())
-                .modelName(ollama.getModel())
-                .temperature(ollama.getTemperature())
-                .timeout(Duration.ofMillis(ollama.getReadTimeoutMs()))
-                .maxRetries(ollama.getMaxRetries())
-                .build();
-    }
-
-    /** Respond 专用的大模型（云端 DashScope），用于高质量回复生成 */
-    @Bean
-    @Qualifier("dashscopeChatModel")
-    ChatLanguageModel dashscopeChatModel(DashScopeProperties dashscope) {
-        return OpenAiChatModel.builder()
-                .apiKey(dashscope.getApiKey())
-                .baseUrl(dashscope.getBaseUrl())
-                .modelName(dashscope.getModel())
-                .temperature(0.3)
-                .timeout(Duration.ofMillis(dashscope.getReadTimeoutMs()))
-                .maxRetries(1)
-                .customHeaders(Map.of(
-                    "X-DashScope-Version", "2023-06-01",
-                    "Authorization", "Bearer " + dashscope.getApiKey()
-                ))
-                .build();
     }
 
     /** 内存版 Checkpoint Saver */
@@ -111,11 +84,10 @@ public class ITSupportGraphConfig {
 
     @Bean
     CompiledGraph<ITSupportGraphState> itSupportGraph(
-            @Qualifier("ollamaChatModel") ChatLanguageModel ollamaChatModel,
             ITSupportTools tools,
             MemorySaver checkpointSaver) {
         try {
-            StateGraph<ITSupportGraphState> sg = buildGraph(ollamaChatModel, tools);
+            StateGraph<ITSupportGraphState> sg = buildGraph(tools);
             return sg.compile(CompileConfig.builder()
                     .checkpointSaver(checkpointSaver)
                     .build());
@@ -125,7 +97,7 @@ public class ITSupportGraphConfig {
     }
 
     private StateGraph<ITSupportGraphState> buildGraph(
-            ChatLanguageModel ollamaModel, ITSupportTools tools) throws GraphStateException {
+            ITSupportTools tools) throws GraphStateException {
 
         var channels =
                 Map.<String, Channel<?>>of(
@@ -153,8 +125,8 @@ public class ITSupportGraphConfig {
         StateGraph<ITSupportGraphState> graph =
                 new StateGraph<>(channels, ITSupportGraphState::new);
 
-        // router：分析意图，设置 nextNode（使用本地 Ollama 模型）
-        graph.addNode(Nodes.ROUTER, routerNode(ollamaModel, tools));
+        // router：分析意图，设置 nextNode（使用 DashScope 模型）
+        graph.addNode(Nodes.ROUTER, routerNode(tools));
         // execute：执行工具，设置工具结果
         graph.addNode(Nodes.EXECUTE_TOOL, executeToolNode(tools));
         // pending：设置待审批信息，如果未审批则返回 END（触发调用方中断）
@@ -231,12 +203,24 @@ public class ITSupportGraphConfig {
     // ===================== 节点实现 =====================
 
     private AsyncNodeAction<ITSupportGraphState> routerNode(
-            ChatLanguageModel chatModel, ITSupportTools tools) {
+            ITSupportTools tools) {
         return state -> {
             Span span = tracer.spanBuilder("router_node").startSpan();
             try (Scope scope = span.makeCurrent()) {
                 String userMessage = state.lastUserMessage();
                 span.setAttribute("user.message.length", userMessage.length());
+
+                // 预处理：纯问候语/闲聊不走 LLM 路由，直接回复
+                if (isPureGreeting(userMessage)) {
+                    log.debug("Detected pure greeting, skipping LLM routing");
+                    span.setAttribute("router.pre_filter", "greeting");
+                    java.util.Map<String, Object> result = new java.util.HashMap<>();
+                    result.put(CHANNEL_TOOL_NAME, "");
+                    result.put(CHANNEL_ROUTER_OUTPUT, "");
+                    result.put(CHANNEL_LLM_RESPONSE, "");  // 清空残留的上一轮回复
+                    result.put(CHANNEL_NEEDS_APPROVAL, false);
+                    return CompletableFuture.completedFuture(result);
+                }
 
                 // 为小模型优化的简化提示词
                 String prompt =
@@ -245,19 +229,18 @@ public class ITSupportGraphConfig {
                         用户问题：「%s」
 
                         工具选项：
-                        1. searchKnowledgeBase：IT流程、公司内部经验、联系谁、故障处理
-                        2. diagnoseNetwork：VPN、Wi-Fi、有线网络问题
-                        3. generateTicket：创建工单（需要问题摘要）
-                        4. saveMemory：保存用户个人信息（设备、习惯、系统等）
-                        5. searchMemory：搜索用户历史记忆
-                        6. null：不需要工具，直接回复
+                        1. searchKnowledgeBase：IT流程、公司内部经验、联系谁、故障处理、VPN/网络问题
+                        2. generateTicket：创建工单（需要问题摘要）
+                        3. saveMemory：保存用户个人信息（设备、习惯、系统等）
+                        4. searchMemory：搜索用户历史记忆
+                        5. null：不需要工具，直接回复
 
                         简单规则：
                         - IT相关问题 → searchKnowledgeBase
-                        - 纯网络问题 → diagnoseNetwork
                         - 用户说"我"、"我的"（陈述事实）→ saveMemory
                         - 用户问"什么"、"吗"、"怎么"、"记得" → searchMemory
                         - 用户要求创建工单 → generateTicket
+                        - 打招呼、问候、感谢、告别等闲聊 → null
                         - 不确定 → searchKnowledgeBase
 
                         只输出JSON，不要其他文字。
@@ -353,7 +336,6 @@ public class ITSupportGraphConfig {
                 try {
                     result =
                             switch (toolName) {
-                                case "diagnoseNetwork" -> tools.diagnoseNetwork(toolInput);
                                 case "searchKnowledgeBase" -> tools.searchKnowledgeBase(toolInput);
                                 case "generateTicket" -> {
                                     String userId = (String) state.value(CHANNEL_USER_ID).orElse("unknown");
@@ -435,8 +417,22 @@ public class ITSupportGraphConfig {
                     // searchMemory 结果已经是格式化好的，直接返回
                     finalResponse = toolResult;
                 } else if ("searchKnowledgeBase".equals(toolName) && toolResult != null && !toolResult.isBlank()) {
-                    // 知识库检索结果直接返回，不经过 LLM 整理
-                    finalResponse = "根据知识库信息：\n" + toolResult;
+                    // 知识库结果直接返回最相关的一段（RAG 按相似度排序，第一条最相关）
+                    if (toolResult.contains("尚未初始化") || toolResult.contains("暂无相关内容")) {
+                        String prompt =
+                                """
+                                你是一个企业 IT 支持助手，回复简洁中文，先结论后步骤。
+                                用户消息：「%s」
+                                请直接回复。
+                                """.formatted(userMessage);
+                        ModelRouterService.ModelContext context =
+                            new ModelRouterService.ModelContext(
+                                "direct_response_fallback");
+                        finalResponse = hybridModelService.generate(prompt, context);
+                    } else {
+                        String primaryResult = toolResult.split("\n---\n")[0];
+                        finalResponse = primaryResult;
+                    }
                 } else if (toolResult != null && !toolResult.isBlank()) {
                     // RAG/诊断结果需要 LLM 整理 - 使用混合模型服务
                     String prompt =
@@ -448,11 +444,8 @@ public class ITSupportGraphConfig {
                             """.formatted(userMessage, toolResult);
 
                     // 根据任务类型选择模型上下文
-                    com.chatagent.it.model.ModelRouterService.ModelContext context =
-                        new com.chatagent.it.model.ModelRouterService.ModelContext(
-                            null,  // 不指定首选模型
-                            false, // 不特别关注成本
-                            true,  // 质量优先（整理回复需要高质量）
+                    ModelRouterService.ModelContext context =
+                        new ModelRouterService.ModelContext(
                             "response_generation"
                         );
 
@@ -466,11 +459,8 @@ public class ITSupportGraphConfig {
                             请直接回复。
                             """.formatted(userMessage);
 
-                    com.chatagent.it.model.ModelRouterService.ModelContext context =
-                        new com.chatagent.it.model.ModelRouterService.ModelContext(
-                            null,
-                            false,
-                            true,
+                    ModelRouterService.ModelContext context =
+                        new ModelRouterService.ModelContext(
                             "direct_response"
                         );
 

@@ -15,7 +15,7 @@ import dev.langchain4j.service.UserMessage;
         - IMPORTANT: when calling saveMemory or searchMemory, you MUST pass the userId parameter from the current conversation context.
 
         ## Tool Strategy
-        1. Network issues (cannot connect, VPN failure, Wi-Fi) -> diagnoseNetwork
+        1. Network issues (cannot connect, VPN failure, Wi-Fi) -> searchKnowledgeBase
         2. Company IT processes, internal procedures, how-to questions -> searchKnowledgeBase
         3. User requests to create support ticket -> generateTicket
         4. Reply in concise Chinese: conclusion first, then steps.

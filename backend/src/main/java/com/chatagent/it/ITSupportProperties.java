@@ -11,9 +11,11 @@ import org.springframework.stereotype.Component;
 @ConfigurationProperties(prefix = "it-support")
 public class ITSupportProperties {
 
-    private String chatModel = "qwen-turbo";
+    private String chatModel = "qwen3.5-flash";
     private int maxMemoryMessages = 20;
     private int ragTopK = 3;
+    /** RAG 搜索最小相似度分数阈值，低于此值的结果将被过滤 */
+    private double ragMinScore = 0.3;
     private double semanticCacheSimilarityThreshold = 0.9;
     /**
      * Path to IT knowledge base markdown file.

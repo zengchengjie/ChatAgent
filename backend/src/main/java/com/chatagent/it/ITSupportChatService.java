@@ -14,7 +14,6 @@ public class ITSupportChatService {
 
     private final ITSupportAgent agent;
     private final KnowledgeBaseRagService ragService;
-    private final ITSupportTools tools;
     private final Tracer tracer;
 
     public String chat(String sessionId, String message) {
@@ -39,17 +38,6 @@ public class ITSupportChatService {
                             """.formatted(pretty);
                 }
                 span.setAttribute("kb.hit", false);
-                // KB miss -> use network diagnosis first for VPN/network issues
-                if (looksLikeNetworkIssue(text)) {
-                    span.setAttribute("strategy", "network_diagnosis");
-                    String diag = tools.diagnoseNetwork(text);
-                    return """
-                            结论：知识库未命中该问题，建议先按网络诊断步骤排查。
-
-                            步骤：
-                            %s
-                            """.formatted(diag.trim());
-                }
             }
 
             span.setAttribute("strategy", "agent");
@@ -70,16 +58,6 @@ public class ITSupportChatService {
                 || s.contains("vpn")
                 || s.contains("权限")
                 || s.contains("账号");
-    }
-
-    private static boolean looksLikeNetworkIssue(String text) {
-        String s = text.toLowerCase();
-        return s.contains("vpn")
-                || s.contains("连不上")
-                || s.contains("网络")
-                || s.contains("超时")
-                || s.contains("断开")
-                || s.contains("无法连接");
     }
 
     private static boolean isKnowledgeHit(String kb) {
